@@ -1,4 +1,4 @@
-# Large database files (DB persisted via GitHub Actions cache, not git)
+# Large database files
 stock_data.db
 stock_data_slim.db
 *.db-shm
