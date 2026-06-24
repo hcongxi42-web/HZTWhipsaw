@@ -2,11 +2,11 @@ name: Daily Data Update
 
 on:
   schedule:
-    # 北京时间 06:00 (UTC+8) = UTC 22:00 (前一天)
+    # 北京时间 06:00 = UTC 22:00 (前一天)
     - cron: '0 22 * * *'
-    # 北京时间 09:00 重试 (如果 06:00 失败)
+    # 北京时间 09:00 重试 = UTC 01:00
     - cron: '0 1 * * *'
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
     inputs:
       date:
         description: '目标日期 (YYYY-MM-DD, 留空=最新)'
@@ -23,9 +23,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          lfs: true
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -40,38 +37,50 @@ jobs:
           restore-keys: pip-${{ runner.os }}-
 
       - name: Install dependencies
-        run: |
-          pip install baostock pandas numpy scipy tqdm
+        run: pip install baostock pandas numpy scipy tqdm
 
-      - name: Fetch latest data
+      # ── 从 GitHub Actions Cache 恢复精简数据库 ──
+      - name: Restore slim database from cache
+        id: cache-db
+        uses: actions/cache/restore@v4
+        with:
+          path: stock_data_slim.db
+          key: stock-db-${{ github.run_id }}
+          restore-keys: |
+            stock-db-
+
+      - name: Fetch latest data (incremental)
         run: |
           python -c "
+          import os
+          # 如果从缓存恢复了 DB，用它；否则 data_fetcher 会从零开始
           from data_fetcher import update_data
           update_data()
           "
 
       - name: Run screening for new dates
-        run: |
-          python batch_screen.py --latest
+        run: python batch_screen.py --latest
 
-      - name: Slim database
-        run: |
-          python slim_db.py
+      - name: Slim database (keep last 90 days)
+        run: python slim_db.py
+
+      # ── 保存精简数据库到 cache (下次运行用) ──
+      - name: Save slim database to cache
+        uses: actions/cache/save@v4
+        with:
+          path: stock_data_slim.db
+          key: stock-db-${{ github.run_id }}
 
       - name: Generate static site
-        run: |
-          python generate_static.py
+        run: python generate_static.py
 
-      - name: Commit and push changes
+      # ── 只提交静态文件，不提交数据库 ──
+      - name: Commit and push static files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Track LFS for slim DB
-          git lfs track "stock_data_slim.db"
-
-          git add docs/ stock_data_slim.db .gitattributes
+          git add docs/
           git diff --staged --quiet || (
-            git commit -m "📊 Daily update $(date +%Y-%m-%d)"
+            git commit -m "Daily update $(date +%Y-%m-%d)"
             git push
           )

@@ -1,5 +1,6 @@
-# Large database files (use slim version for CI)
+# Large database files (DB persisted via GitHub Actions cache, not git)
 stock_data.db
+stock_data_slim.db
 *.db-shm
 *.db-wal
 
