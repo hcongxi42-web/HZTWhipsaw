@@ -1,0 +1,32 @@
+# Large database files (use slim version for CI)
+stock_data.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Data fetch progress
+.fetch_progress.json
+
+# Output files
+output/
+screening_results.csv
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flask web (deployed as static site via docs/)
+web/
+
+# Temporary
+*.tmp
+*.temp

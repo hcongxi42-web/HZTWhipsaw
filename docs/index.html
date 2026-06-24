@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HZTwhipsaw &middot; 量价洗盘评分</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<link rel="stylesheet" href="static/style.css">
+</head>
+<body>
+
+<header>
+  <h1>HZTwhipsaw <span class="subtitle">量价洗盘评分系统</span></h1>
+  <div class="header-stats" id="headerStats">
+    <span class="stat-item">目标日期 <strong id="statDate">--</strong></span>
+    <span class="stat-item">候选池 <strong id="statTotal">--</strong></span>
+    <span class="stat-item">均分 <strong id="statAvg">--</strong></span>
+    <span class="stat-item">最高分 <strong id="statMax">--</strong></span>
+    <span class="stat-item">涨停数 <strong id="statLimit" style="color:#8B3A3A">--</strong></span>
+  </div>
+</header>
+
+<div class="main-container">
+  <aside class="sidebar">
+    <div class="filter-group">
+      <label>目标日期</label>
+      <select id="dateSelect"><option value="">加载中...</option></select>
+    </div>
+    <div class="filter-group">
+      <label>行业筛选</label>
+      <select id="industrySelect"><option value="all">全部行业</option></select>
+    </div>
+    <div class="filter-group">
+      <label>代码搜索</label>
+      <input type="text" id="searchInput" placeholder="如 300139" autocomplete="off">
+    </div>
+    <div class="filter-group">
+      <label>板块</label>
+      <select id="boardSelect">
+        <option value="all">全部板块</option>
+        <option value="main">主板 (60/00)</option>
+        <option value="star">科创板 (688)</option>
+        <option value="chi">创业板 (300/301)</option>
+        <option value="bj">北交所 (8/9)</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>涨停过滤</label>
+      <select id="limitFilter">
+        <option value="1">排除涨停股</option>
+        <option value="0">包含全部</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>最低总分</label>
+      <input type="range" id="minScore" min="0" max="85" value="0" step="5">
+      <span id="minScoreLabel">&ge; 0</span>
+    </div>
+    <div class="filter-group">
+      <label>排序维度</label>
+      <select id="sortBy">
+        <option value="total">综合总分</option>
+        <option value="washout_quality">洗盘质量</option>
+        <option value="probe_test">试盘信号</option>
+        <option value="ma_convergence">均线粘合</option>
+        <option value="launch_readiness">启动准备</option>
+        <option value="fund_flow">资金流向</option>
+        <option value="volume_health">量价健康</option>
+      </select>
+    </div>
+    <div class="filter-group">
+      <label>排序方向</label>
+      <select id="sortOrder">
+        <option value="desc">从高到低</option>
+        <option value="asc">从低到高</option>
+      </select>
+    </div>
+    <div class="filter-group" style="font-size:10px;color:var(--text-faint);margin-top:8px;">
+      数据来源: baostock<br>更新: 每日 06:00 BJT
+    </div>
+  </aside>
+
+  <main class="table-panel">
+    <div class="table-wrapper">
+      <table id="stockTable">
+        <thead>
+          <tr>
+            <th class="col-rank">#</th>
+            <th class="col-code">代码</th>
+            <th class="col-name">名称</th>
+            <th class="col-score sortable active" data-sort="total">总分</th>
+            <th class="col-dim sortable" data-sort="washout_quality">洗盘</th>
+            <th class="col-dim sortable" data-sort="probe_test">试盘</th>
+            <th class="col-dim sortable" data-sort="ma_convergence">均粘</th>
+            <th class="col-dim sortable" data-sort="launch_readiness">启动</th>
+            <th class="col-dim sortable" data-sort="fund_flow">资金</th>
+            <th class="col-dim sortable" data-sort="volume_health">健康</th>
+            <th class="col-probe">试盘次</th>
+            <th class="col-industry">行业</th>
+            <th class="col-price">收盘</th>
+            <th class="col-pct">涨跌%</th>
+          </tr>
+        </thead>
+        <tbody id="tableBody">
+          <tr><td colspan="13" class="loading">加载中...</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="pagination" id="pagination"></div>
+  </main>
+
+  <aside class="detail-panel" id="detailPanel">
+    <div class="detail-placeholder">点击左侧股票查看详情</div>
+  </aside>
+</div>
+
+<script src="static/app.js"></script>
+</body>
+</html>
