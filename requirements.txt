@@ -1,5 +1,5 @@
 baostock
 pandas>=1.5,<2.0
-numpy
+numpy>=1.20,<2.0
 scipy
 tqdm
