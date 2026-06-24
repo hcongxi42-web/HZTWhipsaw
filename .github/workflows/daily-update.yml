@@ -37,33 +37,31 @@ jobs:
           restore-keys: pip-${{ runner.os }}-
 
       - name: Install dependencies
-        run: pip install baostock pandas numpy scipy tqdm
+        run: pip install -r requirements.txt
 
-      # ── 从 GitHub Actions Cache 恢复精简数据库 ──
-      - name: Restore slim database from cache
+      # ── 恢复运行时数据库 (config.py 期望 stock_data.db) ──
+      - name: Restore database from cache
         id: cache-db
         uses: actions/cache/restore@v4
         with:
-          path: stock_data_slim.db
+          path: stock_data.db
           key: stock-db-${{ github.run_id }}
           restore-keys: |
             stock-db-
 
+      # ── 缓存未命中 → 从种子库复制 ──
+      - name: Bootstrap database if needed
+        run: |
+          if [ ! -f stock_data.db ]; then
+            cp stock_data_seed.db stock_data.db
+            echo "[bootstrap] Copied seed database (data up to June 22)"
+          else
+            echo "[cache] Using cached database"
+          fi
+
       - name: Fetch latest data (incremental)
         run: |
           python -c "
-          import os, sqlite3
-          db_path = 'stock_data_slim.db'
-
-          # 如果缓存未命中，从仓库种子库复制一份
-          if not os.path.exists(db_path):
-              seed = 'stock_data_seed.db'
-              if os.path.exists(seed):
-                  import shutil
-                  shutil.copy(seed, db_path)
-                  print('[seed] Copied seed database from repo')
-
-          # 确保表结构存在 + 增量拉取
           from data_fetcher import update_data
           update_data()
           "
@@ -74,17 +72,17 @@ jobs:
       - name: Slim database (keep last 90 days)
         run: python slim_db.py
 
-      # ── 保存精简数据库到 cache (下次运行用) ──
-      - name: Save slim database to cache
+      # ── 保存数据库到 cache (下次运行用) ──
+      - name: Save database to cache
         uses: actions/cache/save@v4
         with:
-          path: stock_data_slim.db
+          path: stock_data.db
           key: stock-db-${{ github.run_id }}
 
       - name: Generate static site
         run: python generate_static.py
 
-      # ── 只提交静态文件，不提交数据库 ──
+      # ── 只提交静态文件 ──
       - name: Commit and push static files
         run: |
           git config user.name "github-actions[bot]"
