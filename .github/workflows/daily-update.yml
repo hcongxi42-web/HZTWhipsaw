@@ -49,11 +49,29 @@ jobs:
           restore-keys: |
             stock-db-
 
-      - name: Fetch latest data (incremental)
+      - name: Fetch latest data
         run: |
           python -c "
-          import os
-          # 如果从缓存恢复了 DB，用它；否则 data_fetcher 会从零开始
+          import os, sqlite3
+          db_path = 'stock_data_slim.db'
+          needs_bootstrap = True
+          if os.path.exists(db_path):
+              try:
+                  conn = sqlite3.connect(db_path)
+                  conn.execute('SELECT COUNT(*) FROM stock_daily')
+                  conn.close()
+                  needs_bootstrap = False
+                  print('[incremental] Using cached database')
+              except:
+                  print('[bootstrap] Database exists but invalid, reinitializing')
+                  os.remove(db_path)
+
+          if needs_bootstrap:
+              import config
+              from datetime import datetime, timedelta
+              config.START_DATE = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+              print(f'[bootstrap] First run, fetching from {config.START_DATE}')
+
           from data_fetcher import update_data
           update_data()
           "
