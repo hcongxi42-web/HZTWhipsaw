@@ -459,6 +459,10 @@ def update_data(update_index: bool = True):
     - update_index: 是否同时更新指数数据（默认 True）
     """
     end = datetime.now().strftime('%Y-%m-%d')
+
+    # 确保表结构存在（首次运行/空库）
+    db_manager.init_db()
+
     db_latest = db_manager.get_latest_date()
 
     # 1. 数据库为空 → 全量获取

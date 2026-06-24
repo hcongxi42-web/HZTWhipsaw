@@ -228,11 +228,13 @@ def upsert_index_batch(df: pd.DataFrame, conn=None):
 # ==================== 查询 ====================
 
 def get_latest_date():
-    """获取股票日度数据中最新交易日，如无数据返回 None"""
+    """获取股票日度数据中最新交易日，如无数据/表不存在返回 None"""
     conn = get_conn()
     try:
         row = conn.execute("SELECT MAX(date) FROM stock_daily").fetchone()
         return row[0] if row and row[0] else None
+    except sqlite3.OperationalError:
+        return None
     finally:
         conn.close()
 
