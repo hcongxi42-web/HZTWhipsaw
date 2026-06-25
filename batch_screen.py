@@ -7,6 +7,7 @@
 import sys, io, os
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
+import os
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -15,7 +16,7 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
-DB_PATH = r"c:\Users\32299\Desktop\新建文件夹\stock_data.db"
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data.db')
 LOOKBACK_DAYS = 30
 MIN_TURN = 2.0
 MIN_PRICE = 5.0

@@ -14,7 +14,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data.d
 DOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs')
 DATA_DIR = os.path.join(DOCS_DIR, 'data')
 HISTORY_DIR = os.path.join(DATA_DIR, 'history')
-INDUSTRY_PATH = r'c:\Users\32299\Desktop\data2\industry.csv'
+INDUSTRY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'industry.csv')
 
 
 def load_industry_map():
