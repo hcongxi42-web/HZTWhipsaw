@@ -17,7 +17,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data.db')
-LOOKBACK_DAYS = 30
+LOOKBACK_DAYS = 60  # 股票强度需要更长回溯(前45天+近15天)
 MIN_TURN = 2.0
 MIN_PRICE = 5.0
 MAX_PRICE = 500.0
@@ -122,8 +122,9 @@ def load_stock_data(code, start, end):
 # ============================================================
 class StockScorer:
     """单只股票的完整量价指标计算与评分"""
-    def __init__(self, df: pd.DataFrame):
+    def __init__(self, df: pd.DataFrame, index_returns: pd.Series = None):
         self.df = df.reset_index(drop=True)
+        self.index_returns = index_returns  # 沪深300日收益率 (date-indexed Series)
         self._precompute()
         self.scores = {}
 
@@ -366,22 +367,247 @@ class StockScorer:
         raw = h_score - d_penalty + w_bonus + sync_score * 0.2
         return max(0, min(100, raw))
 
+    # ── 股票强度 (Stock Strength) ──
+    def score_stock_strength(self):
+        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势"""
+        d = self.df
+        n = len(d)
+
+        # 强度窗口：取前 N-15 天（后15天是现有洗盘窗口，不重叠）
+        strength_end = n - 15
+        if strength_end < 12:
+            return 35  # 历史数据不足，给中性偏低分
+
+        strength = d.iloc[:strength_end].copy()
+        washout = d.iloc[strength_end:]
+
+        if len(strength) < 10:
+            return 35
+
+        # A. 前期趋势强度 (35%)
+        trend_score = self._strength_trend(strength)
+
+        # B. 量能积累确认 (25%)
+        volume_score = self._strength_volume(strength)
+
+        # C. 回调有序性 (25%)
+        pullback_score = self._strength_pullback(strength, washout)
+
+        # D. 相对优势 vs 沪深300 (15%)
+        relative_score = self._strength_relative(strength)
+
+        return max(0, min(100,
+            trend_score * 0.35 + volume_score * 0.25 +
+            pullback_score * 0.25 + relative_score * 0.15
+        ))
+
+    def _strength_trend(self, strength):
+        """子因子A：前期趋势强度（OLS斜率+R²）"""
+        from scipy import stats as sp_stats
+        x = np.arange(len(strength))
+        y = strength['close'].values
+        slope, _, r_value, _, _ = sp_stats.linregress(x, y)
+        r2 = r_value ** 2
+
+        mean_close = y.mean()
+        if mean_close <= 0:
+            return 30
+        annual_slope = (slope * 250 / mean_close) * 100  # 年化%
+
+        # 年化斜率：15%-50% 最优（温和上涨）
+        if 15 <= annual_slope <= 50:
+            slope_score = 90
+        elif 5 <= annual_slope < 15:
+            slope_score = 55 + (annual_slope - 5) / 10 * 35
+        elif 50 < annual_slope <= 80:
+            slope_score = 90 - (annual_slope - 50) / 30 * 40
+        elif annual_slope > 80:
+            slope_score = 25  # 涨太猛→题材炒作嫌疑
+        elif 0 <= annual_slope < 5:
+            slope_score = 25 + annual_slope / 5 * 30
+        elif annual_slope >= -10:
+            slope_score = 10 + (annual_slope + 10) / 10 * 15
+        else:
+            slope_score = 5
+
+        # R²：越高说明趋势越"干净"
+        if r2 >= 0.70:
+            r2_score = 90
+        elif r2 >= 0.50:
+            r2_score = 65 + (r2 - 0.50) / 0.20 * 25
+        elif r2 >= 0.30:
+            r2_score = 40 + (r2 - 0.30) / 0.20 * 25
+        else:
+            r2_score = max(10, r2 * 100)
+
+        return max(0, min(100, slope_score * 0.55 + r2_score * 0.45))
+
+    def _strength_volume(self, strength):
+        """子因子B：量能积累确认（放量上涨+OBV趋势+背离检测）"""
+        up = strength[strength['ret'] > 0]
+        if len(up) < 3:
+            return 25
+
+        all_avg_vr = strength['vol_ratio'].mean()
+        up_avg_vr = up['vol_ratio'].mean()
+
+        # 上涨日量比溢价
+        if all_avg_vr > 0:
+            premium = up_avg_vr / all_avg_vr
+            if premium >= 1.15:
+                premium_score = 90
+            elif premium >= 1.05:
+                premium_score = 65 + (premium - 1.05) / 0.10 * 25
+            elif premium >= 1.0:
+                premium_score = 45 + (premium - 1.0) / 0.05 * 20
+            else:
+                premium_score = max(10, premium * 45)
+        else:
+            premium_score = 50
+
+        # OBV 趋势
+        from scipy import stats as sp_stats
+        x = np.arange(len(strength))
+        obv_slope, _, obv_r2, _, _ = sp_stats.linregress(x, strength['obv'].values)
+        obv_trend = 80 if obv_slope > 0 else 25
+        obv_str = min(100, max(10, obv_r2 * 100))
+
+        # 量价背离：价涨量不跟
+        close_slope, _, _, _, _ = sp_stats.linregress(x, strength['close'].values)
+        if close_slope > 0 and obv_slope <= 0:
+            div_penalty = 20
+        elif close_slope > 0 and obv_slope / max(close_slope, 1e-10) < 0.3:
+            div_penalty = 8
+        else:
+            div_penalty = 0
+
+        return max(0, min(100,
+            premium_score * 0.40 + (obv_trend * 0.50 + obv_str * 0.50) * 0.40 - div_penalty * 0.20
+        ))
+
+    def _strength_pullback(self, strength, washout):
+        """子因子C：回调有序性（深度+缩量+底部形态）"""
+        peak_val = strength['close'].max()
+        end_val = strength['close'].iloc[-1]
+        dd = (peak_val - end_val) / peak_val if peak_val > 0 else 0
+
+        # 回调深度：理想区间 20%-40%
+        if 0.20 <= dd <= 0.40:
+            depth_score = 85
+        elif 0.10 <= dd < 0.20:
+            depth_score = 55 + (dd - 0.10) / 0.10 * 30
+        elif 0.40 < dd <= 0.60:
+            depth_score = 85 - (dd - 0.40) / 0.20 * 50
+        elif dd < 0.05:
+            depth_score = 30  # 几乎没回调——洗盘不充分
+        elif dd > 0.60:
+            depth_score = 18  # 回调太深——趋势可能已坏
+        else:
+            depth_score = 45
+
+        # 回调阶段缩量
+        peak_idx = strength['close'].idxmax()
+        pullback = strength.loc[peak_idx:]
+        down_in_pb = pullback[pullback['ret'] < 0]
+        if len(down_in_pb) >= 2:
+            avg_shrink = down_in_pb['vol_ratio'].mean()
+            shrink_score = max(0, min(100, (1.0 - avg_shrink) * 200))
+        else:
+            shrink_score = 40
+
+        # 底部形态（强度窗口末尾振幅收敛）
+        bottom = strength.tail(5)
+        amp_std = bottom['amplitude'].std()
+        price_flat = abs(bottom['close'].iloc[-1] / bottom['close'].iloc[0] - 1)
+        if amp_std < 0.015 and price_flat < 0.03:
+            bottom_score = 90
+        elif amp_std < 0.025 and price_flat < 0.06:
+            bottom_score = 68
+        elif amp_std < 0.04:
+            bottom_score = 48
+        else:
+            bottom_score = 28
+
+        return max(0, min(100,
+            depth_score * 0.35 + shrink_score * 0.35 + bottom_score * 0.30
+        ))
+
+    def _strength_relative(self, strength):
+        """子因子D：相对优势 vs 沪深300"""
+        if self.index_returns is None or len(self.index_returns) == 0:
+            return 50  # 无指数数据 → 中性
+
+        excess_sum = 0.0
+        win_count = 0
+        total = 0
+
+        for _, row in strength.iterrows():
+            d = row['date']
+            if hasattr(d, 'strftime'):
+                d_str = d.strftime('%Y-%m-%d')
+            else:
+                d_str = str(d)[:10]
+
+            if d_str not in self.index_returns.index:
+                continue
+            stock_ret = row['ret']
+            if pd.isna(stock_ret):
+                continue
+            idx_ret = self.index_returns[d_str]
+            excess_sum += (stock_ret - idx_ret)
+            if stock_ret > idx_ret:
+                win_count += 1
+            total += 1
+
+        if total < 5:
+            return 50
+
+        avg_excess = excess_sum / total * 100  # 日均超额收益(%)
+        win_rate = win_count / total
+
+        # 年化超额收益
+        annual_excess = avg_excess * 250
+        if annual_excess >= 25:
+            excess_score = 95
+        elif annual_excess >= 12:
+            excess_score = 72 + (annual_excess - 12) / 13 * 23
+        elif annual_excess >= 0:
+            excess_score = 48 + annual_excess / 12 * 24
+        elif annual_excess >= -15:
+            excess_score = 25 + (annual_excess + 15) / 15 * 23
+        else:
+            excess_score = max(5, 25 + annual_excess / 30 * 20)
+
+        # 胜率
+        if win_rate >= 0.62:
+            wr_score = 90
+        elif win_rate >= 0.52:
+            wr_score = 62 + (win_rate - 0.52) / 0.10 * 28
+        elif win_rate >= 0.42:
+            wr_score = 40 + (win_rate - 0.42) / 0.10 * 22
+        else:
+            wr_score = max(10, win_rate * 80)
+
+        return max(0, min(100, excess_score * 0.55 + wr_score * 0.45))
+
     def compute_total_score(self):
         scores = {
             'washout_quality': self.score_washout_quality(),
             'probe_test': self.score_probe_test(),
-            'launch_readiness': self.score_launch_readiness(),
             'ma_convergence': self.score_ma_convergence(),
+            'stock_strength': self.score_stock_strength(),
+            'launch_readiness': self.score_launch_readiness(),
             'fund_flow': self.score_fund_flow(),
             'volume_health': self.score_volume_health(),
         }
         weights = {
-            'washout_quality': 0.23,
-            'probe_test': 0.23,
-            'ma_convergence': 0.17,
-            'launch_readiness': 0.13,
-            'fund_flow': 0.12,
-            'volume_health': 0.12,
+            'washout_quality': 0.15,
+            'probe_test': 0.15,
+            'ma_convergence': 0.20,
+            'stock_strength': 0.30,
+            'launch_readiness': 0.10,
+            'fund_flow': 0.05,
+            'volume_health': 0.05,
         }
         total = sum(scores[k] * weights[k] for k in weights)
         self.scores = {**scores, 'total': total}
@@ -436,6 +662,23 @@ def run_for_date(target_date):
     print(f"  预筛选: {len(passed_codes)}/{len(eligible_codes)} 通过 "
           f"(淘汰: 无回调={reasons['no_retreat']} 波动小={reasons['too_stable']} 出货={reasons['distribution']})")
 
+    # 加载沪深300指数日收益（用于股票强度·相对优势子因子）
+    index_returns = None
+    try:
+        idx_conn = sqlite3.connect(DB_PATH)
+        idx_df = pd.read_sql_query("""
+            SELECT date, pctChg FROM index_daily
+            WHERE code='sh.000300' AND date >= ? AND date <= ?
+            ORDER BY date
+        """, idx_conn, params=(start_date, target_date))
+        idx_conn.close()
+        if not idx_df.empty:
+            idx_df['date_dt'] = pd.to_datetime(idx_df['date'])
+            idx_df['idx_ret'] = idx_df['pctChg'].astype(float) / 100.0
+            index_returns = idx_df.set_index('date')['idx_ret']
+    except Exception as e:
+        print(f"  ⚠ 沪深300数据加载失败: {e}, 相对优势将使用默认值")
+
     # 3. 精选评分
     results = []
     for code in tqdm(passed_codes, desc='  精选评分', leave=False):
@@ -443,7 +686,7 @@ def run_for_date(target_date):
         if df is None or len(df) < 10:
             continue
         try:
-            scorer = StockScorer(df)
+            scorer = StockScorer(df, index_returns=index_returns)
             scores = scorer.compute_total_score()
             summary = scorer.get_summary_stats()
             results.append({'code': code, **scores, **summary})
@@ -513,13 +756,19 @@ def main():
     # 建表 (不存在才建)
     conn.execute('''CREATE TABLE IF NOT EXISTS screening_history
         (target_date TEXT, code TEXT, rank INTEGER, total REAL,
-         washout_quality REAL, probe_test REAL, launch_readiness REAL,
-         ma_convergence REAL, fund_flow REAL, volume_health REAL,
+         washout_quality REAL, probe_test REAL, ma_convergence REAL,
+         stock_strength REAL, launch_readiness REAL, fund_flow REAL, volume_health REAL,
          latest_close REAL, latest_pctChg REAL, avg_turn REAL,
          avg_amplitude REAL, max_dd_pct REAL, is_limit_up_today INTEGER,
          recent_limit_days INTEGER, probe_count INTEGER, days_since_probe INTEGER,
          up_days INTEGER, down_days INTEGER, avg_vol_ratio REAL, retreat_shrink REAL,
          PRIMARY KEY (target_date, code))''')
+    # 迁移：为已有表添加 stock_strength 列
+    try:
+        conn.execute("ALTER TABLE screening_history ADD COLUMN stock_strength REAL")
+        print("  ✓ 已新增 stock_strength 列")
+    except sqlite3.OperationalError:
+        pass  # 列已存在
     conn.commit()
 
     all_results = []

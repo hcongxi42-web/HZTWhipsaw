@@ -62,6 +62,7 @@
       <label>排序维度</label>
       <select id="sortBy">
         <option value="total">综合总分</option>
+        <option value="stock_strength">股票强度</option>
         <option value="washout_quality">洗盘质量</option>
         <option value="probe_test">试盘信号</option>
         <option value="ma_convergence">均线粘合</option>
@@ -91,6 +92,7 @@
             <th class="col-code">代码</th>
             <th class="col-name">名称</th>
             <th class="col-score sortable active" data-sort="total">总分</th>
+            <th class="col-dim sortable" data-sort="stock_strength">强度</th>
             <th class="col-dim sortable" data-sort="washout_quality">洗盘</th>
             <th class="col-dim sortable" data-sort="probe_test">试盘</th>
             <th class="col-dim sortable" data-sort="ma_convergence">均粘</th>
@@ -104,7 +106,7 @@
           </tr>
         </thead>
         <tbody id="tableBody">
-          <tr><td colspan="13" class="loading">加载中...</td></tr>
+          <tr><td colspan="15" class="loading">加载中...</td></tr>
         </tbody>
       </table>
     </div>

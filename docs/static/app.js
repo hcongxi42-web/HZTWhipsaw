@@ -103,7 +103,7 @@ async function loadIndustries() {
 // ── Load stock data for selected date ──
 async function loadData() {
   if (!currentDate) return;
-  document.getElementById('tableBody').innerHTML = '<tr><td colspan="13" class="loading">加载中...</td></tr>';
+  document.getElementById('tableBody').innerHTML = '<tr><td colspan="15" class="loading">加载中...</td></tr>';
 
   try {
     const r = await fetch(`data/${currentDate}.json`);
@@ -113,7 +113,7 @@ async function loadData() {
     currentPage = 1;
     renderTable();
   } catch(e) {
-    document.getElementById('tableBody').innerHTML = '<tr><td colspan="13" class="loading">数据加载失败</td></tr>';
+    document.getElementById('tableBody').innerHTML = '<tr><td colspan="15" class="loading">数据加载失败</td></tr>';
   }
 }
 
@@ -183,7 +183,7 @@ function renderTable() {
 
   const tbody = document.getElementById('tableBody');
   if (pageStocks.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="13" class="loading">无匹配结果</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="15" class="loading">无匹配结果</td></tr>';
     document.getElementById('pagination').innerHTML = '';
     return;
   }
@@ -194,6 +194,7 @@ function renderTable() {
       <td class="col-code">${s.code}</td>
       <td class="col-name">${s.name}</td>
       <td class="col-score ${scoreClass(s.total)}">${s.total.toFixed(1)}</td>
+      <td class="col-dim ${scoreClass(s.stock_strength||0)}">${(s.stock_strength||0).toFixed(0)}</td>
       <td class="col-dim ${scoreClass(s.washout_quality)}">${s.washout_quality}</td>
       <td class="col-dim ${scoreClass(s.probe_test)}">${s.probe_test}</td>
       <td class="col-dim ${scoreClass(s.ma_convergence)}">${s.ma_convergence}</td>
@@ -291,15 +292,16 @@ function renderDetail(stock, hist) {
     <div class="radar-box" id="radarChart"></div>
 
     <div class="score-bars">
-      ${['washout_quality','probe_test','ma_convergence','launch_readiness','fund_flow','volume_health']
+      ${['stock_strength','washout_quality','probe_test','ma_convergence','launch_readiness','fund_flow','volume_health']
         .map(k => {
-          const labels = { washout_quality:'洗盘质量', probe_test:'试盘信号', ma_convergence:'均线粘合',
+          const labels = { stock_strength:'股票强度', washout_quality:'洗盘质量', probe_test:'试盘信号', ma_convergence:'均线粘合',
                           launch_readiness:'启动准备', fund_flow:'资金流向', volume_health:'量价健康' };
+          const v = stock[k] || 0;
           return `
           <div class="score-bar-row">
             <span class="score-bar-label">${labels[k]}</span>
-            <div class="score-bar-track"><div class="score-bar-fill" style="width:${stock[k]}%;background:${barColor(stock[k])}"></div></div>
-            <span class="score-bar-val ${scoreClass(stock[k])}">${stock[k]}</span>
+            <div class="score-bar-track"><div class="score-bar-fill" style="width:${v}%;background:${barColor(v)}"></div></div>
+            <span class="score-bar-val ${scoreClass(v)}">${v.toFixed(0)}</span>
           </div>`;
         }).join('')}
     </div>
@@ -348,9 +350,9 @@ function renderRadar(stock) {
   if (radarChart) radarChart.dispose();
   radarChart = echarts.init(dom);
 
-  const labels = ['洗盘', '试盘', '均粘', '启动', '资金', '健康'];
-  const keys = ['washout_quality', 'probe_test', 'ma_convergence', 'launch_readiness', 'fund_flow', 'volume_health'];
-  const values = keys.map(k => stock[k]);
+  const labels = ['强度', '洗盘', '试盘', '均粘', '启动', '资金', '健康'];
+  const keys = ['stock_strength', 'washout_quality', 'probe_test', 'ma_convergence', 'launch_readiness', 'fund_flow', 'volume_health'];
+  const values = keys.map(k => stock[k] || 0);
 
   radarChart.setOption({
     tooltip: { trigger: 'item', backgroundColor: '#FFF', borderColor: '#D0CDC5', textStyle: { color: '#2B2B2B', fontSize: 12 } },

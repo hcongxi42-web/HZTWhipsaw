@@ -84,7 +84,7 @@ def main():
     for date in dates:
         df = pd.read_sql_query("""
             SELECT code, rank, total, washout_quality, probe_test, ma_convergence,
-                   launch_readiness, fund_flow, volume_health,
+                   stock_strength, launch_readiness, fund_flow, volume_health,
                    latest_close, latest_pctChg, is_limit_up_today,
                    recent_limit_days, probe_count, days_since_probe
             FROM screening_history
@@ -105,6 +105,7 @@ def main():
                 'washout_quality': round(float(row['washout_quality']), 1),
                 'probe_test': round(float(row['probe_test']), 1),
                 'ma_convergence': round(float(row['ma_convergence']), 1),
+                'stock_strength': round(float(row.get('stock_strength', 0) or 0), 1),
                 'launch_readiness': round(float(row['launch_readiness']), 1),
                 'fund_flow': round(float(row['fund_flow']), 1),
                 'volume_health': round(float(row['volume_health']), 1),
@@ -148,7 +149,7 @@ def main():
     for i, code in enumerate(all_codes):
         df = pd.read_sql_query("""
             SELECT target_date, rank, total, washout_quality, probe_test, ma_convergence,
-                   launch_readiness, fund_flow, volume_health
+                   stock_strength, launch_readiness, fund_flow, volume_health
             FROM screening_history WHERE code = ? ORDER BY target_date
         """, conn, params=(code,))
 
@@ -160,6 +161,7 @@ def main():
                 'washout_quality': round(float(row['washout_quality']), 1),
                 'probe_test': round(float(row['probe_test']), 1),
                 'ma_convergence': round(float(row['ma_convergence']), 1),
+                'stock_strength': round(float(row.get('stock_strength', 0) or 0), 1),
                 'launch_readiness': round(float(row['launch_readiness']), 1),
                 'fund_flow': round(float(row['fund_flow']), 1),
                 'volume_health': round(float(row['volume_health']), 1),
