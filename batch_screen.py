@@ -367,6 +367,12 @@ class StockScorer:
         raw = h_score - d_penalty + w_bonus + sync_score * 0.2
         return max(0, min(100, raw))
 
+    def score_volume_price_health(self):
+        """量价健康：资金流向 + 量价健康 等权合并"""
+        ff = self.score_fund_flow()
+        vh = self.score_volume_health()
+        return (ff + vh) / 2.0
+
     # ── 股票强度 (Stock Strength) ──
     def score_stock_strength(self):
         """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势"""
@@ -597,6 +603,8 @@ class StockScorer:
             'ma_convergence': self.score_ma_convergence(),
             'stock_strength': self.score_stock_strength(),
             'launch_readiness': self.score_launch_readiness(),
+            'volume_price_health': self.score_volume_price_health(),
+            # 保留旧维度供参考（不计入总分）
             'fund_flow': self.score_fund_flow(),
             'volume_health': self.score_volume_health(),
         }
@@ -606,8 +614,7 @@ class StockScorer:
             'ma_convergence': 0.20,
             'stock_strength': 0.30,
             'launch_readiness': 0.10,
-            'fund_flow': 0.05,
-            'volume_health': 0.05,
+            'volume_price_health': 0.10,
         }
         total = sum(scores[k] * weights[k] for k in weights)
         self.scores = {**scores, 'total': total}
@@ -757,18 +764,20 @@ def main():
     conn.execute('''CREATE TABLE IF NOT EXISTS screening_history
         (target_date TEXT, code TEXT, rank INTEGER, total REAL,
          washout_quality REAL, probe_test REAL, ma_convergence REAL,
-         stock_strength REAL, launch_readiness REAL, fund_flow REAL, volume_health REAL,
+         stock_strength REAL, launch_readiness REAL,
+         volume_price_health REAL, fund_flow REAL, volume_health REAL,
          latest_close REAL, latest_pctChg REAL, avg_turn REAL,
          avg_amplitude REAL, max_dd_pct REAL, is_limit_up_today INTEGER,
          recent_limit_days INTEGER, probe_count INTEGER, days_since_probe INTEGER,
          up_days INTEGER, down_days INTEGER, avg_vol_ratio REAL, retreat_shrink REAL,
          PRIMARY KEY (target_date, code))''')
-    # 迁移：为已有表添加 stock_strength 列
-    try:
-        conn.execute("ALTER TABLE screening_history ADD COLUMN stock_strength REAL")
-        print("  ✓ 已新增 stock_strength 列")
-    except sqlite3.OperationalError:
-        pass  # 列已存在
+    # 迁移：为已有表添加新列
+    for col in ['stock_strength', 'volume_price_health']:
+        try:
+            conn.execute(f"ALTER TABLE screening_history ADD COLUMN {col} REAL")
+            print(f"  ✓ 已新增 {col} 列")
+        except sqlite3.OperationalError:
+            pass  # 列已存在
     conn.commit()
 
     all_results = []

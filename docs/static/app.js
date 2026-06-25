@@ -103,7 +103,7 @@ async function loadIndustries() {
 // ── Load stock data for selected date ──
 async function loadData() {
   if (!currentDate) return;
-  document.getElementById('tableBody').innerHTML = '<tr><td colspan="15" class="loading">加载中...</td></tr>';
+  document.getElementById('tableBody').innerHTML = '<tr><td colspan="14" class="loading">加载中...</td></tr>';
 
   try {
     const r = await fetch(`data/${currentDate}.json`);
@@ -113,7 +113,7 @@ async function loadData() {
     currentPage = 1;
     renderTable();
   } catch(e) {
-    document.getElementById('tableBody').innerHTML = '<tr><td colspan="15" class="loading">数据加载失败</td></tr>';
+    document.getElementById('tableBody').innerHTML = '<tr><td colspan="14" class="loading">数据加载失败</td></tr>';
   }
 }
 
@@ -183,7 +183,7 @@ function renderTable() {
 
   const tbody = document.getElementById('tableBody');
   if (pageStocks.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="15" class="loading">无匹配结果</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="14" class="loading">无匹配结果</td></tr>';
     document.getElementById('pagination').innerHTML = '';
     return;
   }
@@ -199,8 +199,7 @@ function renderTable() {
       <td class="col-dim ${scoreClass(s.probe_test)}">${s.probe_test}</td>
       <td class="col-dim ${scoreClass(s.ma_convergence)}">${s.ma_convergence}</td>
       <td class="col-dim ${scoreClass(s.launch_readiness)}">${s.launch_readiness}</td>
-      <td class="col-dim ${scoreClass(s.fund_flow)}">${s.fund_flow}</td>
-      <td class="col-dim ${scoreClass(s.volume_health)}">${s.volume_health}</td>
+      <td class="col-dim ${scoreClass(s.volume_price_health||0)}">${(s.volume_price_health||0).toFixed(0)}</td>
       <td class="col-probe">${s.probe_count}</td>
       <td class="col-industry"><span style="color:${getIndustryColor(s.industry)};font-weight:600;white-space:nowrap;">${s.industry}</span></td>
       <td class="col-price">${s.latest_close.toFixed(2)}</td>
@@ -292,10 +291,10 @@ function renderDetail(stock, hist) {
     <div class="radar-box" id="radarChart"></div>
 
     <div class="score-bars">
-      ${['stock_strength','washout_quality','probe_test','ma_convergence','launch_readiness','fund_flow','volume_health']
+      ${['stock_strength','washout_quality','probe_test','ma_convergence','launch_readiness','volume_price_health']
         .map(k => {
           const labels = { stock_strength:'股票强度', washout_quality:'洗盘质量', probe_test:'试盘信号', ma_convergence:'均线粘合',
-                          launch_readiness:'启动准备', fund_flow:'资金流向', volume_health:'量价健康' };
+                          launch_readiness:'启动准备', volume_price_health:'量价健康' };
           const v = stock[k] || 0;
           return `
           <div class="score-bar-row">
@@ -350,8 +349,8 @@ function renderRadar(stock) {
   if (radarChart) radarChart.dispose();
   radarChart = echarts.init(dom);
 
-  const labels = ['强度', '洗盘', '试盘', '均粘', '启动', '资金', '健康'];
-  const keys = ['stock_strength', 'washout_quality', 'probe_test', 'ma_convergence', 'launch_readiness', 'fund_flow', 'volume_health'];
+  const labels = ['强度', '洗盘', '试盘', '均粘', '启动', '量价'];
+  const keys = ['stock_strength', 'washout_quality', 'probe_test', 'ma_convergence', 'launch_readiness', 'volume_price_health'];
   const values = keys.map(k => stock[k] || 0);
 
   radarChart.setOption({

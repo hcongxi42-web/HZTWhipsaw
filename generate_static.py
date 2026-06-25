@@ -84,7 +84,7 @@ def main():
     for date in dates:
         df = pd.read_sql_query("""
             SELECT code, rank, total, washout_quality, probe_test, ma_convergence,
-                   stock_strength, launch_readiness, fund_flow, volume_health,
+                   stock_strength, launch_readiness, volume_price_health,
                    latest_close, latest_pctChg, is_limit_up_today,
                    recent_limit_days, probe_count, days_since_probe
             FROM screening_history
@@ -107,8 +107,7 @@ def main():
                 'ma_convergence': round(float(row['ma_convergence']), 1),
                 'stock_strength': round(float(row.get('stock_strength', 0) or 0), 1),
                 'launch_readiness': round(float(row['launch_readiness']), 1),
-                'fund_flow': round(float(row['fund_flow']), 1),
-                'volume_health': round(float(row['volume_health']), 1),
+                'volume_price_health': round(float(row.get('volume_price_health', 0) or 0), 1),
                 'latest_close': round(float(row['latest_close']), 2),
                 'latest_pctChg': round(float(row['latest_pctChg']), 2),
                 'is_limit_up_today': bool(int(row['is_limit_up_today'])),
@@ -149,7 +148,7 @@ def main():
     for i, code in enumerate(all_codes):
         df = pd.read_sql_query("""
             SELECT target_date, rank, total, washout_quality, probe_test, ma_convergence,
-                   stock_strength, launch_readiness, fund_flow, volume_health
+                   stock_strength, launch_readiness, volume_price_health
             FROM screening_history WHERE code = ? ORDER BY target_date
         """, conn, params=(code,))
 
@@ -163,8 +162,7 @@ def main():
                 'ma_convergence': round(float(row['ma_convergence']), 1),
                 'stock_strength': round(float(row.get('stock_strength', 0) or 0), 1),
                 'launch_readiness': round(float(row['launch_readiness']), 1),
-                'fund_flow': round(float(row['fund_flow']), 1),
-                'volume_health': round(float(row['volume_health']), 1),
+                'volume_price_health': round(float(row.get('volume_price_health', 0) or 0), 1),
             }
             for _, row in df.iterrows()
         ]
