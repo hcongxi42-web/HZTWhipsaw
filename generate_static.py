@@ -127,14 +127,25 @@ def main():
         json.dump({'industries': industries}, f, ensure_ascii=False)
     print(f'  ✓ industries.json ({len(industries)} industries)')
 
-    # 导出各股票历史数据
-    print('导出股票历史数据...')
+    # 导出各股票历史数据 + K线
+    print('导出股票历史数据 + K线...')
     all_codes = pd.read_sql_query(
         "SELECT DISTINCT code FROM screening_history", conn
     )['code'].tolist()
     print(f'  共 {len(all_codes)} 只有历史记录的股票')
 
-    for code in all_codes:
+    # 批量加载 K 线数据 (最近 60 天, 一次性查询)
+    kline_df = pd.read_sql_query("""
+        SELECT code, date, open, high, low, close, volume, pctChg, turn
+        FROM stock_daily
+        WHERE date >= (SELECT DATE(MAX(date), '-60 days') FROM stock_daily)
+        ORDER BY code, date
+    """, conn)
+    kline_by_code = {}
+    for code, grp in kline_df.groupby('code'):
+        kline_by_code[code] = grp.tail(30).to_dict('records')  # 只保留最近30天
+
+    for i, code in enumerate(all_codes):
         df = pd.read_sql_query("""
             SELECT target_date, rank, total, washout_quality, probe_test, ma_convergence,
                    launch_readiness, fund_flow, volume_health
@@ -157,17 +168,36 @@ def main():
         ]
 
         if history:
-            # 用纯数字代码作文件名
             fname = strip_code(code)
+            # K 线数据 (最近 30 天)
+            kline_raw = kline_by_code.get(code, [])
+            kline = [
+                {
+                    'date': r['date'],
+                    'open': round(float(r['open']), 2),
+                    'high': round(float(r['high']), 2),
+                    'low': round(float(r['low']), 2),
+                    'close': round(float(r['close']), 2),
+                    'volume': int(r['volume']),
+                    'pctChg': round(float(r['pctChg']), 2) if r.get('pctChg') is not None else 0,
+                    'turn': round(float(r['turn']), 2) if r.get('turn') is not None else 0,
+                }
+                for r in kline_raw
+            ]
+
             with open(os.path.join(HISTORY_DIR, f'{fname}.json'), 'w', encoding='utf-8') as f:
                 json.dump({
                     'code': code,
                     'name': name_map.get(code, '?'),
                     'industry': get_industry(code, ind_map),
                     'history': history,
+                    'kline': kline,
                 }, f, ensure_ascii=False)
 
-    print(f'  ✓ {len(all_codes)} stock history files')
+        if (i + 1) % 500 == 0:
+            print(f'  ... {i+1}/{len(all_codes)}')
+
+    print(f'  ✓ {len(all_codes)} stock history files (with K-line)')
 
     conn.close()
     print(f'\n静态站点文件已生成到: {DOCS_DIR}')

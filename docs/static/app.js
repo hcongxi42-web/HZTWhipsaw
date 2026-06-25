@@ -6,7 +6,7 @@
 let currentPage = 1, currentSort = 'total', currentOrder = 'desc';
 let currentDate = null;
 let allStocks = [];           // currently loaded date's stocks (filtered)
-let radarChart = null, historyChart = null;
+let radarChart = null, historyChart = null, klineChart = null;
 let dateStats = {};           // summary stats per date
 
 const PER_PAGE = 50;
@@ -306,6 +306,8 @@ function renderDetail(stock, hist) {
 
     <div class="history-box" id="historyChart"></div>
 
+    <div class="kline-box" id="klineChart"></div>
+
     <div class="detail-stats">
       <div class="detail-stat">
         <div class="val">${stock.recent_limit_days}</div>
@@ -336,6 +338,7 @@ function renderDetail(stock, hist) {
 
   setTimeout(() => renderRadar(stock), 50);
   setTimeout(() => renderHistory(hist), 80);
+  setTimeout(() => renderKline(hist), 110);
 }
 
 // ── Radar chart ──
@@ -441,10 +444,71 @@ function renderHistory(hist) {
   });
 }
 
+// ── K-line chart ──
+function renderKline(hist) {
+  const dom = document.getElementById('klineChart');
+  if (!dom) return;
+  if (klineChart) klineChart.dispose();
+  klineChart = echarts.init(dom);
+
+  if (!hist || !hist.kline || hist.kline.length < 3) {
+    klineChart.setOption({
+      title: { text: 'K线数据加载中...', left: 'center', top: 'center',
+        textStyle: { fontSize: 12, color: '#B0ACA7', fontFamily: 'Times New Roman, serif', fontStyle: 'italic' } }
+    });
+    return;
+  }
+
+  const kline = hist.kline;
+  const dates = kline.map(r => r.date);
+  const ohlc = kline.map(r => [r.open, r.close, r.low, r.high]);
+  const volumes = kline.map(r => r.volume);
+
+  klineChart.setOption({
+    grid: [
+      { left: 55, right: 12, top: 8, height: '60%' },
+      { left: 55, right: 12, top: '76%', height: '20%' },
+    ],
+    xAxis: [
+      { type: 'category', data: dates, gridIndex: 0, axisLabel: { show: false },
+        axisLine: { lineStyle: { color: '#D0CDC5' } }, axisTick: { show: false } },
+      { type: 'category', data: dates, gridIndex: 1,
+        axisLabel: { fontSize: 8, color: '#7A7671', fontFamily: 'Times New Roman, serif' },
+        axisLine: { lineStyle: { color: '#D0CDC5' } }, axisTick: { show: false } },
+    ],
+    yAxis: [
+      { type: 'value', gridIndex: 0, scale: true,
+        splitLine: { lineStyle: { color: '#E8E5DF', type: 'dashed' } },
+        axisLabel: { fontSize: 9, color: '#7A7671', fontFamily: 'Times New Roman, serif' },
+        axisLine: { show: false } },
+      { type: 'value', gridIndex: 1, axisLabel: { show: false },
+        splitLine: { show: false }, axisLine: { show: false } },
+    ],
+    series: [
+      {
+        type: 'candlestick', name: 'Price', data: ohlc,
+        xAxisIndex: 0, yAxisIndex: 0,
+        itemStyle: { color: COLORS.brick, color0: COLORS.green,
+          borderColor: COLORS.brick, borderColor0: COLORS.green },
+      },
+      {
+        type: 'bar', name: 'Volume',
+        data: volumes.map((v, i) => {
+          const isUp = ohlc[i][1] >= ohlc[i][0];
+          return { value: v,
+            itemStyle: { color: isUp ? 'rgba(139,58,58,0.35)' : 'rgba(74,107,90,0.35)' } };
+        }),
+        xAxisIndex: 1, yAxisIndex: 1,
+      },
+    ],
+  });
+}
+
 // ── Resize ──
 window.addEventListener('resize', () => {
   if (radarChart) radarChart.resize();
   if (historyChart) historyChart.resize();
+  if (klineChart) klineChart.resize();
 });
 
 // ── Keyboard nav ──
