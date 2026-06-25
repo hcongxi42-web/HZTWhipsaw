@@ -519,34 +519,6 @@ def main():
          recent_limit_days INTEGER, probe_count INTEGER, days_since_probe INTEGER,
          up_days INTEGER, down_days INTEGER, avg_vol_ratio REAL, retreat_shrink REAL,
          PRIMARY KEY (target_date, code))''')
-    conn.execute('''
-        CREATE TABLE screening_history (
-            target_date TEXT,
-            code TEXT,
-            rank INTEGER,
-            total REAL,
-            washout_quality REAL,
-            probe_test REAL,
-            launch_readiness REAL,
-            ma_convergence REAL,
-            fund_flow REAL,
-            volume_health REAL,
-            latest_close REAL,
-            latest_pctChg REAL,
-            avg_turn REAL,
-            avg_amplitude REAL,
-            max_dd_pct REAL,
-            is_limit_up_today INTEGER,
-            recent_limit_days INTEGER,
-            probe_count INTEGER,
-            days_since_probe INTEGER,
-            up_days INTEGER,
-            down_days INTEGER,
-            avg_vol_ratio REAL,
-            retreat_shrink REAL,
-            PRIMARY KEY (target_date, code)
-        )
-    ''')
     conn.commit()
 
     all_results = []
