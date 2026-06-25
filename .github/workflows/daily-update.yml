@@ -89,5 +89,7 @@ jobs:
           git add docs/
           git diff --staged --quiet || (
             git commit -m "Daily update $(date +%Y-%m-%d)"
-            git push
+            for i in 1 2 3; do
+              git pull --rebase origin main && git push && break || sleep 10
+            done
           )
