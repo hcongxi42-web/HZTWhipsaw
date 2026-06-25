@@ -76,6 +76,17 @@ header h1 .subtitle {
 }
 .stat-item { white-space: nowrap; }
 
+/* ── Tip bar ── */
+.tip-bar {
+  text-align: center;
+  padding: 5px 0;
+  font-size: 10px;
+  color: var(--text-faint);
+  font-style: italic;
+  border-bottom: 0.5px solid var(--border);
+  background: var(--bg-panel);
+}
+
 /* ── Main Layout ── */
 .main-container {
   display: flex;
