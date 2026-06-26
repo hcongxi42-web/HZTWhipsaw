@@ -57,24 +57,51 @@ def main():
     name_map = names.set_index('code')['code_name'].to_dict()
     print(f'  股票数: {len(name_map)}')
 
-    # 获取所有可用日期 (≥100条)
+    # 获取所有可用日期 (≥20条即可展示，标注质量)
     print('获取日期列表...')
     dates_df = pd.read_sql_query("""
         SELECT target_date, COUNT(*) as cnt, ROUND(AVG(total),1) as avg_score,
                ROUND(MAX(total),1) as max_score, SUM(is_limit_up_today) as limit_count
         FROM screening_history
-        GROUP BY target_date HAVING cnt >= 100
+        GROUP BY target_date HAVING cnt >= 20
         ORDER BY target_date DESC
     """, conn)
     dates = dates_df['target_date'].tolist()
     print(f'  可用日期: {len(dates)} ({dates[-1]} ~ {dates[0]})')
 
-    # 写入日期列表
+    # 获取每个日期的 stock_daily 原始股票数，用于数据质量标识
+    daily_counts = {}
+    try:
+        count_rows = pd.read_sql_query("""
+            SELECT date, COUNT(DISTINCT code) as stock_count
+            FROM stock_daily
+            WHERE date IN (SELECT DISTINCT target_date FROM screening_history)
+            GROUP BY date
+        """, conn)
+        daily_counts = dict(zip(count_rows['date'], count_rows['stock_count']))
+    except Exception:
+        pass
+
+    # 写入日期列表 (含数据质量)
+    stats_dict = dates_df.set_index('target_date').to_dict(orient='index')
+    for d in stats_dict:
+        sc = daily_counts.get(d, 0)
+        if sc >= 4000:
+            quality = 'full'
+        elif sc >= 1000:
+            quality = 'partial'
+        elif sc > 0:
+            quality = 'sparse'
+        else:
+            quality = 'unknown'
+        stats_dict[d]['stock_count'] = sc
+        stats_dict[d]['quality'] = quality
+
     with open(os.path.join(DATA_DIR, 'dates.json'), 'w', encoding='utf-8') as f:
         json.dump({
             'dates': dates,
             'latest': dates[0],
-            'stats': dates_df.set_index('target_date').to_dict(orient='index')
+            'stats': stats_dict
         }, f, ensure_ascii=False)
     print(f'  ✓ dates.json')
 

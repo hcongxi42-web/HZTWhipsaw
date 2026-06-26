@@ -513,4 +513,115 @@ def update_data(update_index: bool = True):
         except Exception as e:
             print(f"[data_fetcher] akshare 数据更新出错: {e}")
 
-    return 0, 0
+    return _get_latest_date_count()
+
+
+# ==================== 数据完整性检查 & 回填 ====================
+
+def _get_latest_date_count():
+    """返回 (最新日期, 股票数)"""
+    conn = db_manager.get_conn()
+    try:
+        row = conn.execute(
+            "SELECT date, COUNT(DISTINCT code) FROM stock_daily GROUP BY date ORDER BY date DESC LIMIT 1"
+        ).fetchone()
+        if row:
+            return row[0], row[1]
+        return None, 0
+    finally:
+        conn.close()
+
+
+def check_date_completeness(date_str: str, min_stocks: int = 4000) -> tuple:
+    """
+    检查指定日期的数据是否完整
+    返回 (stock_count, is_complete)
+    """
+    conn = db_manager.get_conn()
+    try:
+        cnt = conn.execute(
+            "SELECT COUNT(DISTINCT code) FROM stock_daily WHERE date = ?", (date_str,)
+        ).fetchone()[0]
+        return cnt, cnt >= min_stocks
+    finally:
+        conn.close()
+
+
+def backfill_recent_dates(days: int = 3, min_stocks: int = 1000):
+    """
+    检查最近 N 天的 stock_daily 数据完整性，补拉缺口日期。
+    返回补拉成功的日期列表。
+    """
+    conn = db_manager.get_conn()
+    try:
+        # 获取最近 N 天（排除周末）
+        from datetime import datetime as dt
+        end = dt.now()
+        check_dates = []
+        d = end
+        while len(check_dates) < days * 2:  # 最多回看 days*2 个日历日
+            d_str = d.strftime('%Y-%m-%d')
+            if d.weekday() < 5:  # 周一到周五
+                check_dates.append(d_str)
+            d = d - timedelta(days=1)
+            if len(check_dates) >= days:
+                break
+
+        # 检查每个日期
+        gap_dates = []
+        for d_str in check_dates:
+            cnt = conn.execute(
+                "SELECT COUNT(DISTINCT code) FROM stock_daily WHERE date = ?", (d_str,)
+            ).fetchone()[0]
+            if cnt < min_stocks:
+                gap_dates.append((d_str, cnt))
+    finally:
+        conn.close()
+
+    if not gap_dates:
+        print("[backfill] 最近日期数据完整，无需回填")
+        return []
+
+    filled = []
+    _login()
+    try:
+        for d_str, cnt in gap_dates:
+            print(f"[backfill] 日期 {d_str} 仅有 {cnt} 只股票，补拉中...")
+            try:
+                fetch_and_store_all(start_date=d_str, end_date=d_str)
+                # 同时补拉指数
+                fetch_and_store_index(start_date=d_str, end_date=d_str)
+                filled.append(d_str)
+                print(f"[backfill] ✓ {d_str} 补拉完成")
+            except Exception as e:
+                print(f"[backfill] ✗ {d_str} 补拉失败: {e}")
+            time.sleep(1)
+    finally:
+        _logout()
+
+    return filled
+
+
+def fetch_with_retry(max_attempts: int = 3, wait_minutes: int = 30):
+    """
+    拉取数据并检查完整性，不完整则等待重试。
+    返回最终是否成功获取到完整数据。
+    """
+    import time as time_mod
+    end = datetime.now().strftime('%Y-%m-%d')
+
+    for attempt in range(1, max_attempts + 1):
+        print(f"\n[fetch_with_retry] 第 {attempt}/{max_attempts} 次尝试...")
+        update_data(update_index=True)
+        cnt, ok = check_date_completeness(end, min_stocks=4000)
+        print(f"[fetch_with_retry] 最新日期 {end}: {cnt} 只股票, {'完整' if ok else '不完整'}")
+
+        if ok:
+            return True
+
+        if attempt < max_attempts:
+            print(f"[fetch_with_retry] 数据不完整，等待 {wait_minutes} 分钟后重试...")
+            time_mod.sleep(wait_minutes * 60)
+
+    print(f"[fetch_with_retry] {max_attempts} 次尝试后仍不完整，继续执行")
+    return False

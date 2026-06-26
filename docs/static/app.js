@@ -78,9 +78,12 @@ async function loadDates() {
     const d = await r.json();
     dateStats = d.stats || {};
     const sel = document.getElementById('dateSelect');
-    sel.innerHTML = d.dates.map(dt =>
-      `<option value="${dt}">${dt}</option>`
-    ).join('');
+    const qualityTag = { full: '[完]', partial: '[部]', sparse: '[稀]', unknown: '[?]' };
+    sel.innerHTML = d.dates.map(dt => {
+      const q = (dateStats[dt] && dateStats[dt].quality) || 'unknown';
+      const sc = (dateStats[dt] && dateStats[dt].stock_count) || (dateStats[dt] && dateStats[dt].cnt) || 0;
+      return `<option value="${dt}">${qualityTag[q]} ${dt} · ${sc}只</option>`;
+    }).join('');
     if (d.latest) { sel.value = d.latest; currentDate = d.latest; }
     sel.addEventListener('change', () => {
       currentDate = sel.value;
@@ -127,6 +130,11 @@ function updateStats(d) {
   document.getElementById('statAvg').textContent = avg;
   document.getElementById('statMax').textContent = max;
   document.getElementById('statLimit').textContent = allStocks.filter(s => s.is_limit_up_today).length;
+  // 数据质量
+  const ds = dateStats[currentDate];
+  const qlabel = { full: '完整', partial: '部分', sparse: '稀疏', unknown: '未知' };
+  document.getElementById('statQuality').textContent = ds ? (qlabel[ds.quality] || '?') : '?';
+  document.getElementById('statRaw').textContent = ds ? (ds.stock_count || ds.cnt || '?') : '?';
 }
 
 // ── Filter and sort ──

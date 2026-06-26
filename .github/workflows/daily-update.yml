@@ -6,6 +6,8 @@ on:
     - cron: '0 22 * * *'
     # 北京时间 09:00 重试 = UTC 01:00
     - cron: '0 1 * * *'
+    # 北京时间 14:00 兜底 = UTC 06:00
+    - cron: '0 6 * * *'
   workflow_dispatch:
     inputs:
       date:
@@ -38,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── 恢复运行时数据库 (config.py 期望 stock_data.db) ──
+      # ── 恢复运行时数据库 ──
       - name: Restore database from cache
         id: cache-db
         uses: actions/cache/restore@v4
@@ -53,16 +55,30 @@ jobs:
         run: |
           if [ ! -f stock_data.db ]; then
             cp stock_data_seed.db stock_data.db
-            echo "[bootstrap] Copied seed database (data up to June 22)"
+            echo "[bootstrap] Copied seed database"
           else
             echo "[cache] Using cached database"
           fi
 
-      - name: Fetch latest data (incremental)
+      # ── 回填：检查过去3天是否有数据缺口 ──
+      - name: Backfill missing data (last 3 days)
         run: |
           python -c "
-          from data_fetcher import update_data
-          update_data()
+          from data_fetcher import backfill_recent_dates
+          filled = backfill_recent_dates(days=3, min_stocks=1000)
+          if filled:
+              print(f'[backfill] 补拉了 {len(filled)} 天: {filled}')
+          "
+
+      # ── 增量拉取 + 完整性检查 + 自动重试 ──
+      - name: Fetch latest data with completeness check
+        run: |
+          python -c "
+          from data_fetcher import fetch_with_retry, backfill_recent_dates
+          # 先回填再拉新
+          backfill_recent_dates(days=3, min_stocks=1000)
+          # 拉取最新数据并检查完整性（最多3次，间隔30分钟）
+          fetch_with_retry(max_attempts=3, wait_minutes=30)
           "
 
       - name: Run screening for new dates
@@ -71,7 +87,7 @@ jobs:
       - name: Slim database (keep last 90 days)
         run: python slim_db.py
 
-      # ── 保存数据库到 cache (下次运行用) ──
+      # ── 保存数据库到 cache ──
       - name: Save database to cache
         uses: actions/cache/save@v4
         with:
@@ -81,7 +97,7 @@ jobs:
       - name: Generate static site
         run: python generate_static.py
 
-      # ── 只提交静态文件 ──
+      # ── 提交并推送静态文件 ──
       - name: Commit and push static files
         run: |
           git config user.name "github-actions[bot]"
