@@ -70,7 +70,12 @@ jobs:
           "
 
       - name: Run screening for new dates
-        run: python batch_screen.py --latest
+        run: |
+          if [ -n "${{ github.event.inputs.date }}" ]; then
+            python batch_screen.py --date ${{ github.event.inputs.date }}
+          else
+            python batch_screen.py --latest
+          fi
 
       - name: Slim database (drop unused tables + keep 90 days)
         run: python slim_db.py
@@ -78,21 +83,21 @@ jobs:
       - name: Generate static site
         run: python generate_static.py
 
-      # ── 数据质量检查 ──
+      # ── 数据质量检查（检查 DB 实际最新日期，非今天）──
       - name: Data quality check
         run: |
           python -c "
-          from data_fetcher import check_date_completeness
-          from datetime import datetime
-          today = datetime.now().strftime('%Y-%m-%d')
-          cnt, ok = check_date_completeness(today, min_stocks=4000)
-          print(f'[quality] {today}: {cnt} stocks, {\"OK\" if ok else \"INCOMPLETE\"}')
-          if cnt < 1000:
-              print('[quality] WARNING: Severe data shortage, site will show sparse data badge')
-          elif cnt < 4000:
-              print('[quality] WARNING: Partial data day')
+          from data_fetcher import _get_latest_date_count
+          latest_date, cnt = _get_latest_date_count()
+          print(f'[quality] DB latest: {latest_date}, {cnt} stocks')
+          if latest_date is None:
+              print('[quality] WARNING: Database is empty!')
+          elif cnt >= 4000:
+              print(f'[quality] {latest_date} data complete ({cnt} stocks)')
+          elif cnt >= 1000:
+              print(f'[quality] {latest_date} partial data ({cnt} stocks < 4000)')
           else:
-              print('[quality] Data complete')
+              print(f'[quality] WARNING: {latest_date} only {cnt} stocks, likely holiday/weekend')
           "
 
       # ── 保存精简后的数据库到 cache ──
