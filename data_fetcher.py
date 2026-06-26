@@ -698,46 +698,38 @@ def backfill_recent_dates(days: int = 3, min_stocks: int = 1000):
     return filled
 
 
-def fetch_with_retry(max_attempts: int = 3, wait_minutes: int = 30):
+def fetch_with_retry(max_attempts: int = 2, wait_minutes: int = 10):
     """
-    拉取数据并检查完整性，不完整则等待重试。
-    智能检测：不强制要求「今天」有数据，而是检查 DB 中实际最新日期是否完整。
-    baostock 通常 T+1 延迟，周末/节假日无数据。
+    一站式数据更新：先回填缺口 → 增量拉新 → 完整性检查 → 自适应重试。
+    不强制要求「今天」有数据，检查 DB 实际最新日期是否完整。
     """
     import time as time_mod
 
+    # 先回填最近 3 天的数据缺口（仅补已有数据中的空洞，不等未发布日期）
+    backfill_recent_dates(days=3, min_stocks=1000)
+
     for attempt in range(1, max_attempts + 1):
-        print(f"\n[fetch_with_retry] 第 {attempt}/{max_attempts} 次尝试...")
+        print(f"\n[fetch_with_retry] 第 {attempt}/{max_attempts} 次拉取...")
         update_data(update_index=True)
 
-        # ── 智能检查：用 DB 实际最新日期，而非死磕「今天」 ──
+        # ── 智能检查：用 DB 实际最新日期 ──
         latest_date, cnt = _get_latest_date_count()
         print(f"[fetch_with_retry] DB 最新日期: {latest_date}, {cnt} 只股票")
 
         if latest_date is None:
-            print("[fetch_with_retry] DB 为空，继续等待...")
+            print("[fetch_with_retry] DB 为空")
         elif cnt >= 4000:
-            print(f"[fetch_with_retry] {latest_date} 数据完整 ({cnt} 只)，继续执行")
+            print(f"[fetch_with_retry] {latest_date} 数据完整 ({cnt} 只)，继续")
             return True
         elif cnt >= 1000:
-            # 部分数据：可能是当天 baostock 还在陆续发布
-            print(f"[fetch_with_retry] {latest_date} 数据部分 ({cnt} 只)，"
-                  f"{'等待重试' if attempt < max_attempts else '接受部分数据继续'}")
+            print(f"[fetch_with_retry] {latest_date} 部分数据 ({cnt} 只)")
         else:
-            # 稀疏数据（如周末/节假日）
-            if latest_date:
-                print(f"[fetch_with_retry] {latest_date} 仅 {cnt} 只，可能是节假日/周末")
+            print(f"[fetch_with_retry] {latest_date} 仅 {cnt} 只（可能节假日）")
 
         if attempt < max_attempts:
-            # 自适应等待：数据越少等越久，但上限20分钟
-            if cnt >= 2000:
-                wait = min(15, wait_minutes)  # 快齐了，等短些
-            elif cnt >= 500:
-                wait = min(20, wait_minutes)  # 中等
-            else:
-                wait = wait_minutes           # 几乎没数据，按原计划等
+            wait = 5 if cnt >= 2000 else (10 if cnt >= 500 else wait_minutes)
             print(f"[fetch_with_retry] 等待 {wait} 分钟后重试...")
             time_mod.sleep(wait * 60)
 
-    print(f"[fetch_with_retry] {max_attempts} 次尝试后仍不完整，继续执行")
+    print(f"[fetch_with_retry] {max_attempts} 次后接受当前数据状态，继续执行")
     return False

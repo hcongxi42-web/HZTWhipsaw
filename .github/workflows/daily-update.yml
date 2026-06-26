@@ -60,14 +60,13 @@ jobs:
             echo "[cache] Using cached database"
           fi
 
-      # ── 回填缺口 + 增量拉取 + 完整性检查 + 自动重试 ──
+      # ── 增量拉取 + 完整性检查 + 自动重试 ──
+      # fetch_with_retry 内部已含回填逻辑，无需单独 backfill
       - name: Fetch latest data with completeness check
         run: |
           python -c "
-          from data_fetcher import fetch_with_retry, backfill_recent_dates
-          # 先回填最近3天缺口，再拉取最新数据（最多3次重试，间隔30分钟）
-          backfill_recent_dates(days=3, min_stocks=1000)
-          fetch_with_retry(max_attempts=3, wait_minutes=15)
+          from data_fetcher import fetch_with_retry
+          fetch_with_retry(max_attempts=2, wait_minutes=10)
           "
 
       - name: Run screening for new dates
