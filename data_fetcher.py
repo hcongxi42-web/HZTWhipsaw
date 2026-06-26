@@ -592,9 +592,9 @@ def backfill_recent_dates(days: int = 3, min_stocks: int = 1000):
                 # 同时补拉指数
                 fetch_and_store_index(start_date=d_str, end_date=d_str)
                 filled.append(d_str)
-                print(f"[backfill] ✓ {d_str} 补拉完成")
+                print(f"[backfill] OK {d_str} 补拉完成")
             except Exception as e:
-                print(f"[backfill] ✗ {d_str} 补拉失败: {e}")
+                print(f"[backfill] FAIL {d_str} 补拉失败: {e}")
             time.sleep(1)
     finally:
         _logout()
