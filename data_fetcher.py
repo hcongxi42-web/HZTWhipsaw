@@ -379,7 +379,7 @@ def _print_progress_bar(done, total, success, empty, fail):
     filled = int(bar_len * done / total)
     bar = '=' * filled + ' ' * (bar_len - filled)
     print(f'  [{bar}] {pct:5.1f}% ({done}/{total})  '
-          f'ok={success} empty={empty} fail={fail}')
+          f'ok={success} empty={empty} fail={fail}', flush=True)
 
 
 # ==================== 批量获取（断点续传版） ====================

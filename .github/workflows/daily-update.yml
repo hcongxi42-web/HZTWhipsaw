@@ -64,7 +64,7 @@ jobs:
       # fetch_with_retry 内部已含回填逻辑，无需单独 backfill
       - name: Fetch latest data with completeness check
         run: |
-          python -c "
+          python -u -c "
           from data_fetcher import fetch_with_retry
           fetch_with_retry(max_attempts=2, wait_minutes=10)
           "
