@@ -172,8 +172,13 @@ class StockScorer:
 
     # ── 六维评分 (全连续函数, 无硬阈值) ──
 
-    def score_washout_quality(self, recent_days=15):
-        """洗盘质量: 缩量程度40% + 缩量占比35% + 回撤深度25% (全连续)"""
+    def score_washout_quality(self, recent_days=15, strength_score=None):
+        """洗盘质量: 缩量程度40% + 缩量占比35% + 回撤深度25% (全连续)
+        P0门控：strength_score<20 → 无涨可洗，缩量阴跌不是洗盘 → return 0"""
+        # 新增前置门控：没有上涨前科的缩量下跌 = 阴跌，不是洗盘
+        if strength_score is not None and strength_score < 20:
+            return 0
+
         d = self.df.tail(recent_days)
         down_days = d[d['ret'] < 0]
         n_down = len(down_days)
@@ -420,47 +425,47 @@ class StockScorer:
 
     # ── 股票强度 (Stock Strength) ──
     def score_stock_strength(self):
-        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势（含趋势熔断）"""
+        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势（含趋势熔断）
+        P1收紧：下跌趋势 return 0，微跌 return 0~5，trend<15 直接短路"""
         d = self.df
         n = len(d)
 
         # 强度窗口：取前 N-15 天（后15天是现有洗盘窗口，不重叠）
         strength_end = n - 15
         if strength_end < 12:
-            return 5  # 修改四：数据不足 → 极低分（原35太高）
+            return 0  # 数据不足 → 直接出局
 
         strength = d.iloc[:strength_end].copy()
         washout = d.iloc[strength_end:]
 
         if len(strength) < 10:
-            return 5
+            return 0
 
-        # === 修改一：趋势熔断 ===
-        # 先算趋势斜率，如果趋势为负或极弱，直接短路返回极低分
+        # === 趋势熔断（P1收紧：下跌直接归零） ===
         x = np.arange(len(strength))
         log_y = np.log(np.maximum(strength['close'].values, 0.01))
         slope, _, r_value, _, _ = stats.linregress(x, log_y)
         annual_slope = slope * 250 * 100  # 年化%
 
-        # 硬闸1：明显下跌趋势（年化 < -5%），直接给 0-10 分
+        # 硬闸1：明显下跌趋势 → 直接出局
         if annual_slope < -5:
-            return 5
+            return 0
 
-        # 硬闸2：零增长或微跌（年化 -5% ~ 0%），给 5-15 分
+        # 硬闸2：微跌或零增长 → 几乎出局
         if annual_slope < 0:
-            return max(5, min(15, 10 + annual_slope * 1.0))  # -5%→5分, -1%→11分
+            return max(0, 5 + annual_slope)  # -5%→0分, -1%→4分, 逼近0%→5分
 
-        # 硬闸3：横盘无趋势（年化 0%~3%）且 R² 极低，随机游走
+        # 硬闸3：横盘无趋势 + R²极低 = 随机游走
         r2 = r_value ** 2
         if annual_slope < 3 and r2 < 0.30:
-            return 12
+            return 5
 
         # A. 前期趋势强度 (35%)
         trend_score = self._strength_trend(strength)
 
-        # 二次保险：_strength_trend 仍给出低分，直接压制
-        if trend_score < 18:
-            return max(0, min(15, trend_score * 0.5))
+        # 短路：趋势子因子极低 → 不给其他三个因子救场机会
+        if trend_score < 15:
+            return trend_score
 
         # B. 量能积累确认 (25%)
         volume_score = self._strength_volume(strength)
@@ -478,20 +483,12 @@ class StockScorer:
 
     def _strength_trend(self, strength):
         """子因子A：前期趋势强度（对数OLS斜率+R², bell曲线）
-        修改二：负斜率直接判死刑，防止因子加权"救"回来"""
+        注意：负斜率已在主函数 score_stock_strength 硬闸拦截，此处只处理正斜率精细评分"""
         x = np.arange(len(strength))
         log_y = np.log(np.maximum(strength['close'].values, 0.01))
         slope, _, r_value, _, _ = stats.linregress(x, log_y)
         r2 = r_value ** 2
         annual_slope = slope * 250 * 100  # 年化%
-
-        # === 负斜率直接判死刑 ===
-        if annual_slope <= 0:
-            # 高R²的阴跌是最危险的（持续稳定下跌）
-            if r2 >= 0.60:
-                return 3   # 稳定阴跌，接近0分
-            else:
-                return 8   # 无趋势震荡下行
 
         # Bell: 最优年化斜率25%, sigma=18%
         slope_score = self._bell(annual_slope, 25, 18)
@@ -499,8 +496,8 @@ class StockScorer:
         if annual_slope > 80:
             slope_score *= 0.5
         elif annual_slope < 5:    # 0~5% 正斜率，仍然偏弱
-            slope_score *= 0.25   # 从0.4→0.25，更严
-        elif annual_slope < 15:   # 新增：15%以下温和上涨也适当打折
+            slope_score *= 0.25
+        elif annual_slope < 15:   # 5~15% 温和上涨适当打折
             slope_score *= 0.70
 
         # R²: 高加分, 低不扣 — 线性映射带保底
@@ -511,10 +508,10 @@ class StockScorer:
         else:
             r2_score = 40 + r2 * 50
 
-        # 新增：趋势斜率很低（<10%），R²再高也不能救太多
+        # 趋势斜率很低（<10%），R²再高也不能救太多
         raw = slope_score * 0.55 + r2_score * 0.45
         if annual_slope < 10:
-            raw *= 0.6  # 斜率不够，R²是"稳定横盘"而非"稳定上涨"
+            raw *= 0.6  # 斜率不够，高R²只是"稳定横盘"
 
         return max(0, min(100, raw))
 
@@ -534,12 +531,14 @@ class StockScorer:
         else:
             premium_score = 50
 
-        # OBV 趋势: 连续 — 归一化
+        # OBV 趋势: 信息比率化（P2修复：替代 obv_slope/obv_mean 归一化）
         x = np.arange(len(strength))
-        obv_slope, _, obv_r2, _, _ = stats.linregress(x, strength['obv'].values)
-        obv_mean = abs(strength['obv'].mean())
-        if obv_mean > 0:
-            obv_trend = 50 + np.clip(obv_slope / obv_mean * 100, -30, 50)
+        obv_slope, _, obv_r_value, _, _ = stats.linregress(x, strength['obv'].values)
+        obv_r2 = obv_r_value ** 2
+        obv_diff = strength['obv'].diff().dropna()
+        if len(obv_diff) > 1 and obv_diff.std() > 0:
+            obv_ir = obv_diff.mean() / (obv_diff.std() + 1e-10)  # 信息比率
+            obv_trend = 50 + np.clip(obv_ir * 10, -30, 50)
         else:
             obv_trend = 50
         obv_str = min(100, max(10, obv_r2 * 100))
@@ -564,13 +563,13 @@ class StockScorer:
         peak_val = strength['close'].max()
         end_val = strength['close'].iloc[-1]
 
-        # === 新增：判断 peak 出现的时间位置 ===
+        # === 判断 peak 出现的时间位置（P3: 20%→30%） ===
         peak_idx_pos = strength['close'].idxmax()
-        # peak 在窗口前 20% 就见顶，之后一路跌 → 这不是"回调"，是"见顶下跌"
-        if peak_idx_pos < len(strength) * 0.20:
+        # peak 在窗口前 30% 就见顶，之后一路跌 → 这不是"回调"，是"见顶下跌"
+        if peak_idx_pos < len(strength) * 0.30:
             post_peak = strength.loc[peak_idx_pos:]
             if post_peak['close'].iloc[-1] < peak_val * 0.85:
-                return 5  # 主跌浪，不是洗盘回调
+                return 3  # 主跌浪，不是洗盘回调
 
         dd = (peak_val - end_val) / peak_val if peak_val > 0 else 0
 
@@ -646,28 +645,98 @@ class StockScorer:
 
         return max(0, min(100, excess_score * 0.55 + wr_score * 0.45))
 
+    def trend_consistency(self):
+        """P2：前期趋势 vs 近期调整的方向一致性校验
+        - 前期涨 + 近期回调 → 健康洗盘 (高分)
+        - 前期跌 + 近期也跌 → 主跌浪 (0分)
+        - 前期涨 + 近期也涨 → 没有洗盘 (低分)"""
+        strength = self.df.iloc[:-15] if len(self.df) > 15 else self.df
+        recent = self.df.tail(15)
+
+        if len(strength) < 5 or len(recent) < 3:
+            return 50  # 数据不足，中性
+
+        # 前期趋势方向
+        pre_x = np.arange(len(strength))
+        pre_log = np.log(np.maximum(strength['close'].values, 0.01))
+        pre_slope, _, _, _, _ = stats.linregress(pre_x, pre_log)
+        pre_trend = np.sign(pre_slope)
+
+        # 近期调整方向
+        recent_mean = recent['close'].mean()
+        pre_end = strength['close'].iloc[-1]
+
+        if pre_trend > 0 and recent_mean < pre_end * 0.98:
+            return 100  # 前期涨，近期回调 → 健康洗盘
+        elif pre_trend > 0 and recent_mean >= pre_end:
+            return 30   # 前期涨，近期也涨 → 没有洗盘
+        elif pre_trend < 0 and recent_mean < pre_end:
+            return 0    # 前期跌，近期也跌 → 主跌浪
+        else:
+            return 50   # 中性
+
     def compute_total_score(self):
-        scores = {
-            'washout_quality': self.score_washout_quality(),
-            'probe_test': self.score_probe_test(),
-            'ma_convergence': self.score_ma_convergence(),
-            'stock_strength': self.score_stock_strength(),
-            'launch_readiness': self.score_launch_readiness(),
-            'volume_price_health': self.score_volume_price_health(),
-            # 保留旧维度供参考（不计入总分）
-            'fund_flow': self.score_fund_flow(),
-            'volume_health': self.score_volume_health(),
-        }
+        """总分合成：Sigmoid门控乘法。
+        P0核心重构：股票强度不是"30%的维度"，而是"100%的电源开关"。
+        强度不足时，门控系数急剧衰减，其他维度被整体压制。"""
+
+        # 1. 先算股票强度（电源开关，必须最先）
+        stock_strength = self.score_stock_strength()
+
+        # 2. 强度为0 → 直接出局，不浪费算力
+        if stock_strength == 0:
+            self.scores = {
+                'stock_strength': 0, 'washout_quality': 0, 'probe_test': 0,
+                'ma_convergence': 0, 'launch_readiness': 0,
+                'volume_price_health': 0, 'fund_flow': 0, 'volume_health': 0,
+                'total': 0,
+            }
+            return self.scores
+
+        # 3. 洗盘质量：传入强度做前置门控（<20 → 直接 return 0）
+        washout_quality = self.score_washout_quality(strength_score=stock_strength)
+
+        # 4. 其余维度
+        probe_test = self.score_probe_test()
+        ma_convergence = self.score_ma_convergence()
+        launch_readiness = self.score_launch_readiness()
+        volume_price_health = self.score_volume_price_health()
+        fund_flow = self.score_fund_flow()
+        volume_health = self.score_volume_health()
+
+        # 5. 原始线性加权分
         weights = {
-            'washout_quality': 0.15,
-            'probe_test': 0.15,
-            'ma_convergence': 0.20,
-            'stock_strength': 0.30,
-            'launch_readiness': 0.10,
-            'volume_price_health': 0.10,
+            'stock_strength': 0.30, 'washout_quality': 0.15,
+            'probe_test': 0.15, 'ma_convergence': 0.20,
+            'launch_readiness': 0.10, 'volume_price_health': 0.10,
         }
-        total = sum(scores[k] * weights[k] for k in weights)
-        self.scores = {**scores, 'total': total}
+        raw = (stock_strength * 0.30 + washout_quality * 0.15 +
+               probe_test * 0.15 + ma_convergence * 0.20 +
+               launch_readiness * 0.10 + volume_price_health * 0.10)
+
+        # 6. === P0 核心：Sigmoid 门控 ===
+        # gate 在 strength=35 时≈0.5, strength=50 时≈0.90, strength=80 时≈0.999
+        import math
+        gate = 1.0 / (1.0 + math.exp(-0.15 * (stock_strength - 35)))
+
+        # 7. === P2：趋势一致性因子 ===
+        consistency = self.trend_consistency() / 100.0  # 0.0 ~ 1.0
+        consistency_mult = 0.5 + 0.5 * consistency       # 0.5 ~ 1.0
+
+        # 8. 最终总分 = raw × gate × consistency_multiplier
+        total = raw * gate * consistency_mult
+
+        self.scores = {
+            'stock_strength': stock_strength,
+            'washout_quality': washout_quality,
+            'probe_test': probe_test,
+            'ma_convergence': ma_convergence,
+            'launch_readiness': launch_readiness,
+            'volume_price_health': volume_price_health,
+            'fund_flow': fund_flow,
+            'volume_health': volume_health,
+            'total': round(total, 1),
+        }
         return self.scores
 
     def get_summary_stats(self):
