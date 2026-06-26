@@ -226,6 +226,28 @@ def main():
 
     print(f'  ✓ {len(all_codes)} stock history files (with K-line)')
 
+    # ── 清理僵尸文件（DB中已删除但JSON残留的日期/股票）──
+    dead_dates = 0
+    for fn in os.listdir(DATA_DIR):
+        if fn.endswith('.json') and fn not in ('dates.json', 'industries.json', 'storage.json'):
+            date_name = fn.replace('.json', '')
+            if date_name not in dates:
+                os.remove(os.path.join(DATA_DIR, fn))
+                dead_dates += 1
+    if dead_dates:
+        print(f'  ✓ 清理了 {dead_dates} 个僵尸日期文件')
+
+    dead_stocks = 0
+    valid_codes = set(strip_code(c) for c in all_codes)
+    for fn in os.listdir(HISTORY_DIR):
+        if fn.endswith('.json'):
+            code_name = fn.replace('.json', '')
+            if code_name not in valid_codes:
+                os.remove(os.path.join(HISTORY_DIR, fn))
+                dead_stocks += 1
+    if dead_stocks:
+        print(f'  ✓ 清理了 {dead_stocks} 个僵尸股票文件')
+
     conn.close()
 
     # ── 生成存储监控数据 ──
