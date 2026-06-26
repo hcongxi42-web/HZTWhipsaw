@@ -713,8 +713,8 @@ def run_for_date(target_date):
 # ============================================================
 # 批量主流程
 # ============================================================
-def get_missing_dates():
-    """返回数据库中存在但 screening_history 中没有的日期"""
+def get_missing_dates(min_stocks=1000):
+    """返回 stock_daily 中有足够数据、但 screening_history 中尚未评分的日期"""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='screening_history'")
@@ -725,9 +725,15 @@ def get_missing_dates():
         )['target_date'].tolist())
     else:
         existing = set()
-    all_dates = set(pd.read_sql_query(
-        "SELECT DISTINCT date FROM stock_daily WHERE date >= '2026-06-08' ORDER BY date", conn
-    )['date'].tolist())
+    # 只取有足够股票覆盖的日期（≥ min_stocks），不做硬编码日期过滤
+    all_dates = set(pd.read_sql_query(f"""
+        SELECT date FROM (
+            SELECT date, COUNT(DISTINCT code) as cnt
+            FROM stock_daily
+            GROUP BY date
+            HAVING cnt >= {min_stocks}
+        ) ORDER BY date
+    """, conn)['date'].tolist())
     conn.close()
     return sorted(all_dates - existing)
 

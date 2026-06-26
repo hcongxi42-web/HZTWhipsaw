@@ -60,24 +60,13 @@ jobs:
             echo "[cache] Using cached database"
           fi
 
-      # ── 回填：检查过去3天是否有数据缺口 ──
-      - name: Backfill missing data (last 3 days)
-        run: |
-          python -c "
-          from data_fetcher import backfill_recent_dates
-          filled = backfill_recent_dates(days=3, min_stocks=1000)
-          if filled:
-              print(f'[backfill] 补拉了 {len(filled)} 天: {filled}')
-          "
-
-      # ── 增量拉取 + 完整性检查 + 自动重试 ──
+      # ── 回填缺口 + 增量拉取 + 完整性检查 + 自动重试 ──
       - name: Fetch latest data with completeness check
         run: |
           python -c "
           from data_fetcher import fetch_with_retry, backfill_recent_dates
-          # 先回填再拉新
+          # 先回填最近3天缺口，再拉取最新数据（最多3次重试，间隔30分钟）
           backfill_recent_dates(days=3, min_stocks=1000)
-          # 拉取最新数据并检查完整性（最多3次，间隔30分钟）
           fetch_with_retry(max_attempts=3, wait_minutes=30)
           "
 

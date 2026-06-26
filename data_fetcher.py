@@ -248,6 +248,11 @@ def _stock_is_complete(code: str, start_date: str, end_date: str) -> bool:
         if row[0] is None:
             return False
         db_start, db_end, count = row
+
+        # 关键：如果 DB 最新日期早于请求的起始日期，说明有增量日期需要拉取
+        if db_end < start_date:
+            return False
+
         # 以该股票实际最早日期为起点估算预期交易日
         expected_days = _count_trading_days(db_start, end_date)
         from datetime import timedelta

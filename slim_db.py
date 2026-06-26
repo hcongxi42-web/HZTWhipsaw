@@ -34,14 +34,14 @@ def main():
 
     # 3. 清理 screening_history 中的无效日期 (≤20条记录)
     print('清理 screening_history 稀疏日期...')
-    conn.execute("""
+    cursor = conn.execute("""
         DELETE FROM screening_history
         WHERE target_date IN (
             SELECT target_date FROM screening_history
             GROUP BY target_date HAVING COUNT(*) <= 20
         )
     """)
-    cleaned = conn.total_changes - deleted  # subtract previous delete count
+    cleaned = cursor.rowcount
     print(f'  ✓ 清理了 {cleaned} 条稀疏日期记录')
 
     # 4. 删除 sqlite_sequence (如果有)
