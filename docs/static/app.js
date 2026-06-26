@@ -106,7 +106,7 @@ async function loadIndustries() {
 // ── Load stock data for selected date ──
 async function loadData() {
   if (!currentDate) return;
-  document.getElementById('tableBody').innerHTML = '<tr><td colspan="14" class="loading">加载中...</td></tr>';
+  document.getElementById('tableBody').innerHTML = '<tr><td colspan="99" class="loading">加载中...</td></tr>';
 
   try {
     const r = await fetch(`data/${currentDate}.json`);
@@ -116,7 +116,7 @@ async function loadData() {
     currentPage = 1;
     renderTable();
   } catch(e) {
-    document.getElementById('tableBody').innerHTML = '<tr><td colspan="14" class="loading">数据加载失败</td></tr>';
+    document.getElementById('tableBody').innerHTML = '<tr><td colspan="99" class="loading">数据加载失败</td></tr>';
   }
 }
 
@@ -191,7 +191,7 @@ function renderTable() {
 
   const tbody = document.getElementById('tableBody');
   if (pageStocks.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="14" class="loading">无匹配结果</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="99" class="loading">无匹配结果</td></tr>';
     document.getElementById('pagination').innerHTML = '';
     return;
   }

@@ -159,25 +159,48 @@ class StockScorer:
         self.df = d
         self.limit_pct = limit_pct
 
+    # ── 连续映射工具函数 ──
+    @staticmethod
+    def _sigmoid(x, center, steepness):
+        """Sigmoid: 100 / (1 + exp(-k * (x - x0))), 输出 [0, 100]"""
+        return 100.0 / (1.0 + np.exp(-steepness * (x - center)))
+
+    @staticmethod
+    def _bell(x, mu, sigma):
+        """钟形曲线: 100 * exp(-((x - mu) / sigma)^2), 输出 [0, 100]"""
+        return 100.0 * np.exp(-((x - mu) / sigma) ** 2)
+
+    # ── 六维评分 (全连续函数, 无硬阈值) ──
+
     def score_washout_quality(self, recent_days=15):
+        """洗盘质量: 缩量程度40% + 缩量占比35% + 回撤深度25% (全连续)"""
         d = self.df.tail(recent_days)
         down_days = d[d['ret'] < 0]
-        if len(down_days) < 2:
+        n_down = len(down_days)
+
+        if n_down < 2:
             return 30
+
+        # 缩量程度 (40%): sigmoid — vol_ratio 越低越好, center=0.75
         avg_shrink = down_days['vol_ratio'].mean()
-        shrink_score = max(0, min(100, (1.0 - avg_shrink) * 200))
-        shrink_down_pct = (down_days['vol_ratio'] < 0.85).sum() / len(down_days) * 100
+        shrink_score = self._sigmoid(avg_shrink, 0.75, 8.0)
+
+        # 缩量占比 (35%): 下跌日中 vol_ratio<0.85 的比例, 线性
+        shrink_pct = (down_days['vol_ratio'] < 0.85).sum() / n_down
+        shrink_pct_score = shrink_pct * 100
+
+        # 回撤深度 (25%): bell curve — 最优 15%, sigma=10%
         cummax = d['close'].cummax()
         max_dd = ((cummax - d['close']) / cummax).max()
-        if 0.05 <= max_dd <= 0.25:
-            dd_score = 80
-        elif max_dd < 0.05:
-            dd_score = 40
-        else:
-            dd_score = max(0, (0.40 - max_dd) * 200)
-        return shrink_score * 0.40 + shrink_down_pct * 0.35 + dd_score * 0.25
+        dd_score = self._bell(max_dd, 0.15, 0.10)
+        # 极端衰减: <3% 或 >40% 回撤
+        if max_dd < 0.03 or max_dd > 0.40:
+            dd_score *= 0.4
+
+        return shrink_score * 0.40 + shrink_pct_score * 0.35 + dd_score * 0.25
 
     def score_probe_test(self, recent_days=15):
+        """试盘信号: 上影线30% + 量能25% + 试盘后走势35% + 频率加成10% (全连续)"""
         d = self.df.tail(recent_days)
         probe_mask = (
             (d['vol_ratio'] > 1.2) &
@@ -188,95 +211,101 @@ class StockScorer:
         probe_days = d[probe_mask]
         if len(probe_days) == 0:
             return 15
+
         latest = probe_days.iloc[-1]
+
+        # 上影线质量 (30%): 3%-12% 线性映射 [90→30], 两侧连续衰减
         shadow = latest['upper_shadow_pct']
-        if 0.03 <= shadow <= 0.07:
-            shadow_score = 90
+        if shadow <= 0.03:
+            shadow_score = max(10, 30 - (0.03 - shadow) * 200)
         elif shadow <= 0.12:
-            shadow_score = 60
+            shadow_score = 90 - (shadow - 0.03) / 0.09 * 60
         else:
-            shadow_score = 30
+            shadow_score = max(10, 30 - (shadow - 0.12) * 40)
+
+        # 试盘量能 (25%): 1.2-3.5 线性映射 [90→30]
         vr = latest['vol_ratio']
-        if 1.3 <= vr <= 2.5:
-            vol_score = 90
+        if vr <= 1.2:
+            vol_score = max(10, 30 - (1.2 - vr) * 30)
         elif vr <= 3.5:
-            vol_score = 65
+            vol_score = 90 - (vr - 1.2) / 2.3 * 60
         else:
-            vol_score = 40
+            vol_score = max(10, 30 - (vr - 3.5) * 10)
+
+        # 试盘后走势 (35%): bell(收益, 1.5%中心) + sigmoid(量比, 越低越好)
         probe_idx = probe_days.index[-1]
         after_probe = d.loc[probe_idx:]
         if len(after_probe) >= 2:
             after_ret = after_probe['close'].iloc[-1] / after_probe['close'].iloc[0] - 1
             after_vol = after_probe['vol_ratio'].iloc[1:].mean() if len(after_probe) > 1 else 1.0
-            if -0.03 <= after_ret <= 0.05 and after_vol < 1.0:
-                follow_score = 100
-            elif after_ret > -0.05:
-                follow_score = 70
-            else:
-                follow_score = 30
+            ret_quality = self._bell(after_ret, 0.015, 0.04)
+            vol_quality = self._sigmoid(after_vol, 0.85, -6.0)
+            follow_score = ret_quality * 0.55 + vol_quality * 0.45
         else:
             follow_score = 50
+
         freq_bonus = min(15, (len(probe_days) - 1) * 8)
         return min(100, shadow_score * 0.30 + vol_score * 0.25 + follow_score * 0.35 + freq_bonus)
 
     def score_launch_readiness(self, recent_days=5):
+        """启动准备: 质量阳线55% + 均线配合15% + 稳定性10% + 信号新鲜度20% (涨停不惩罚)"""
         d = self.df.tail(recent_days)
         full = self.df
-        recent_limit_days = d['is_limit_up'].sum()
-        limit_penalty = recent_limit_days * 30
-        if d['is_limit_up'].iloc[-1] == 1:
-            limit_penalty += 35
+
+        # 质量阳线 (55%): bell(涨幅, 4.5%) + bell(量比, 1.5)
         quality_up = d[(d['ret'] > 0.02) & (d['vol_ratio'] > 1.0) & (d['is_limit_up'] == 0)]
         if len(quality_up) == 0:
-            base_score = 10
+            # 无质量阳线, 用最近阳线降级评估
+            any_up = d[d['ret'] > 0]
+            if len(any_up) > 0:
+                latest = any_up.iloc[-1]
+                base_score = self._bell(latest['ret'] * 100, 4.5, 3.5) * 0.55 + self._bell(latest['vol_ratio'], 1.5, 1.0) * 0.45
+                base_score *= 0.5  # 降级
+            else:
+                base_score = 10
         else:
             latest = quality_up.iloc[-1]
-            ret = latest['ret']
-            if 0.02 <= ret <= 0.07:
-                ret_score = 75
-            elif ret <= 0.10:
-                ret_score = 45
-            else:
-                ret_score = 20
-            vr = latest['vol_ratio']
-            if 1.0 <= vr <= 2.0:
-                vol_score = 70
-            elif vr <= 3.0:
-                vol_score = 45
-            else:
-                vol_score = 25
+            ret_score = self._bell(latest['ret'] * 100, 4.5, 2.5)
+            vol_score = self._bell(latest['vol_ratio'], 1.5, 0.8)
             base_score = ret_score * 0.55 + vol_score * 0.45
+
+        # 均线配合 (15%): 线性 — 站上MA数
         full_ma5 = full['close'].rolling(5).mean()
         full_ma10 = full['close'].rolling(10).mean()
-        above_ma5 = full['close'].iloc[-1] > full_ma5.iloc[-1]
-        above_ma10 = full['close'].iloc[-1] > full_ma10.iloc[-1]
-        if above_ma5 and above_ma10:
-            ma_bonus = 8
-        elif above_ma5 or above_ma10:
-            ma_bonus = 3
-        else:
-            ma_bonus = -8
+        full_ma20 = full['close'].rolling(20).mean()
+        ma_count = 0
+        c = full['close'].iloc[-1]
+        if pd.notna(full_ma5.iloc[-1]) and c > full_ma5.iloc[-1]:
+            ma_count += 1
+        if pd.notna(full_ma10.iloc[-1]) and c > full_ma10.iloc[-1]:
+            ma_count += 1
+        if pd.notna(full_ma20.iloc[-1]) and c > full_ma20.iloc[-1]:
+            ma_count += 1
+        ma_bonus = [-8, 0, 6, 12][ma_count]
+
+        # 稳定性 (10%): 近3日振幅+价格平坦
         last3 = d.tail(3)
         if len(last3) >= 3:
-            amp_narrow = last3['amplitude'].std() < 0.015
-            price_flat = abs(last3['close'].iloc[-1] / last3['close'].iloc[0] - 1) < 0.02
-            stable_bonus = 10 if (amp_narrow and price_flat) else 0
+            amp_score = self._sigmoid(last3['amplitude'].std(), 0.012, -200.0)
+            flat_score = self._bell(abs(last3['close'].iloc[-1] / last3['close'].iloc[0] - 1), 0, 0.02)
+            stable_bonus = (amp_score * 0.5 + flat_score * 0.5) * 0.10
         else:
             stable_bonus = 0
+
+        # 信号新鲜度 (20%): 连续衰减 days_ago * 5
         staleness_penalty = 0
         if len(quality_up) > 0:
             last_up_idx = quality_up.index[-1]
             days_since_up = len(d) - 1 - (last_up_idx - d.index[0])
-            if days_since_up >= 4:
-                staleness_penalty = 8
-            elif days_since_up >= 2:
-                staleness_penalty = 3
+            staleness_penalty = min(20, days_since_up * 5)
         else:
-            staleness_penalty = 12
-        raw = base_score + ma_bonus + stable_bonus - limit_penalty - staleness_penalty
+            staleness_penalty = 15
+
+        raw = base_score + ma_bonus + stable_bonus - staleness_penalty
         return max(0, min(100, raw))
 
     def score_ma_convergence(self):
+        """均线粘合: 粘合度55% + 价格位置 + 均线排列 + 收敛加成 (sigmoid连续化)"""
         d = self.df
         close = d['close'].iloc[-1]
         ma_values = {}
@@ -286,31 +315,20 @@ class StockScorer:
                 ma_values[n] = val
         if len(ma_values) < 3:
             return 40
+
         mas = list(ma_values.values())
         ma_range = max(mas) - min(mas)
         ma_mean = np.mean(mas)
         conv_ratio = 1.0 - (ma_range / ma_mean)
-        if conv_ratio >= 0.98:
-            conv_score = 100
-        elif conv_ratio >= 0.95:
-            conv_score = 85 + (conv_ratio - 0.95) / 0.03 * 15
-        elif conv_ratio >= 0.90:
-            conv_score = 65 + (conv_ratio - 0.90) / 0.05 * 20
-        elif conv_ratio >= 0.85:
-            conv_score = 40 + (conv_ratio - 0.85) / 0.05 * 25
-        elif conv_ratio >= 0.80:
-            conv_score = 20 + (conv_ratio - 0.80) / 0.05 * 20
-        else:
-            conv_score = max(5, conv_ratio * 25)
+
+        # 粘合度 (55%): sigmoid center=0.92, 陡峭度20
+        conv_score = self._sigmoid(conv_ratio, 0.92, 20.0)
+
+        # 价格位置: 连续衰减 — 偏离越远分越低
         price_dev = abs(close - ma_mean) / ma_mean
-        if price_dev <= 0.02:
-            pos_bonus = 10
-        elif price_dev <= 0.05:
-            pos_bonus = 5
-        elif price_dev <= 0.08:
-            pos_bonus = 2
-        else:
-            pos_bonus = -5
+        pos_score = max(-5, 12 - price_dev * 180)
+
+        # 均线排列: 多头/混乱/空头
         if 5 in ma_values and 10 in ma_values and 20 in ma_values:
             if ma_values[5] > ma_values[10] > ma_values[20]:
                 align_bonus = 10
@@ -322,6 +340,8 @@ class StockScorer:
                 align_bonus = 0
         else:
             align_bonus = 0
+
+        # 收敛加成: 粘合度在变紧
         tight_bonus = 0
         if len(d) >= 6:
             past_mas = []
@@ -331,40 +351,65 @@ class StockScorer:
                     past_mas.append(pv)
             if len(past_mas) >= 3:
                 past_conv = 1.0 - (max(past_mas) - min(past_mas)) / np.mean(past_mas)
-                if conv_ratio > past_conv + 0.003:
-                    tight_bonus = 8
-                elif conv_ratio > past_conv:
-                    tight_bonus = 4
-        return max(0, min(100, conv_score * 0.55 + pos_bonus + align_bonus + tight_bonus))
+                delta = conv_ratio - past_conv
+                tight_bonus = self._sigmoid(delta, 0.003, 300.0) * 0.10
+
+        return max(0, min(100, conv_score * 0.55 + pos_score + align_bonus + tight_bonus))
 
     def score_fund_flow(self, recent_days=15):
+        """资金流向: OBV趋势30% + OBV强度20% + VWAP位置25% + 量比偏斜25% (全连续)"""
         d = self.df.tail(recent_days)
-        obv_slope, _, r2, _, _ = stats.linregress(np.arange(len(d)), d['obv'].values)
-        obv_trend = 60 if obv_slope > 0 else 20
+
+        # OBV趋势 (30%): 连续 — 归一化斜率
+        obv_slope, _, r_value, _, _ = stats.linregress(np.arange(len(d)), d['obv'].values)
+        r2 = r_value ** 2
+        obv_mean = abs(d['obv'].mean())
+        if obv_mean > 0:
+            norm_slope = obv_slope / obv_mean * 100
+        else:
+            norm_slope = 0
+        obv_trend = 50 + np.clip(norm_slope * 2, -40, 50)
+
+        # OBV强度 (20%): R² 线性映射
         obv_strength = min(100, r2 * 100)
+
+        # VWAP位置 (25%): sigmoid — 价格高于VWAP是好事
         vwap_premium = (d['close'].iloc[-1] / d['vwap'].iloc[-1] - 1)
-        vwap_score = 50 + max(-30, min(30, vwap_premium * 500))
+        vwap_score = self._sigmoid(vwap_premium, 0.005, 300.0)
+
+        # 量比偏斜 (25%): sigmoid — 涨放量/跌缩量比率
         up_vol = d[d['ret'] > 0]['vol_ratio'].mean()
         down_vol = d[d['ret'] < 0]['vol_ratio'].mean()
         if pd.notna(up_vol) and pd.notna(down_vol) and down_vol > 0:
             bias = up_vol / down_vol
-            bias_score = min(100, bias * 60)
+            bias_score = self._sigmoid(bias, 1.3, 4.0)
         else:
             bias_score = 50
+
         return obv_trend * 0.30 + obv_strength * 0.20 + vwap_score * 0.25 + bias_score * 0.25
 
     def score_volume_health(self, recent_days=15):
+        """量价健康: 健康日35% + 出货惩罚15% + 洗盘加成30% + 量价同步20% (全连续)"""
         d = self.df.tail(recent_days)
-        n = len(d)
+        n = max(len(d), 1)
+
+        # 健康日 (35%): 涨放量 — sigmoid
         healthy_pct = ((d['ret'] > 0) & (d['vol_ratio'] > 1.0)).sum() / n
+        h_score = self._sigmoid(healthy_pct, 0.25, 10.0)
+
+        # 出货惩罚 (15%): 跌放量 — 反向sigmoid (越高越差)
         dist_pct = ((d['ret'] < 0) & (d['vol_ratio'] > 1.15)).sum() / n
+        d_penalty = 100 - self._sigmoid(dist_pct, 0.15, 15.0)
+
+        # 洗盘加成 (30%): 跌缩量 — sigmoid
         washout_pct = ((d['ret'] < 0) & (d['vol_ratio'] < 0.85)).sum() / n
-        h_score = healthy_pct * 220
-        d_penalty = dist_pct * 350
-        w_bonus = washout_pct * 70
+        w_bonus = self._sigmoid(washout_pct, 0.20, 8.0)
+
+        # 量价同步 (20%): 量价方向一致性
         sync = (np.sign(d['close'].diff()) == np.sign(d['volume'].diff())).mean()
-        sync_score = (sync - 0.50) * 100
-        raw = h_score - d_penalty + w_bonus + sync_score * 0.2
+        sync_score = (sync - 0.50) * 200
+
+        raw = h_score * 0.35 + d_penalty * 0.15 + w_bonus * 0.30 + sync_score * 0.20
         return max(0, min(100, raw))
 
     def score_volume_price_health(self):
@@ -408,48 +453,32 @@ class StockScorer:
         ))
 
     def _strength_trend(self, strength):
-        """子因子A：前期趋势强度（OLS斜率+R²）"""
-        from scipy import stats as sp_stats
+        """子因子A：前期趋势强度（对数OLS斜率+R², bell曲线）"""
         x = np.arange(len(strength))
-        y = strength['close'].values
-        slope, _, r_value, _, _ = sp_stats.linregress(x, y)
+        log_y = np.log(np.maximum(strength['close'].values, 0.01))
+        slope, _, r_value, _, _ = stats.linregress(x, log_y)
         r2 = r_value ** 2
+        annual_slope = slope * 250 * 100  # 年化%
 
-        mean_close = y.mean()
-        if mean_close <= 0:
-            return 30
-        annual_slope = (slope * 250 / mean_close) * 100  # 年化%
+        # Bell: 最优年化斜率25%, sigma=18%
+        slope_score = self._bell(annual_slope, 25, 18)
+        if annual_slope > 80:
+            slope_score *= 0.5
+        elif annual_slope < 5:
+            slope_score *= 0.4
 
-        # 年化斜率：15%-50% 最优（温和上涨）
-        if 15 <= annual_slope <= 50:
-            slope_score = 90
-        elif 5 <= annual_slope < 15:
-            slope_score = 55 + (annual_slope - 5) / 10 * 35
-        elif 50 < annual_slope <= 80:
-            slope_score = 90 - (annual_slope - 50) / 30 * 40
-        elif annual_slope > 80:
-            slope_score = 25  # 涨太猛→题材炒作嫌疑
-        elif 0 <= annual_slope < 5:
-            slope_score = 25 + annual_slope / 5 * 30
-        elif annual_slope >= -10:
-            slope_score = 10 + (annual_slope + 10) / 10 * 15
-        else:
-            slope_score = 5
-
-        # R²：越高说明趋势越"干净"
+        # R²: 高加分, 低不扣 — 线性映射带保底
         if r2 >= 0.70:
-            r2_score = 90
-        elif r2 >= 0.50:
-            r2_score = 65 + (r2 - 0.50) / 0.20 * 25
-        elif r2 >= 0.30:
-            r2_score = 40 + (r2 - 0.30) / 0.20 * 25
+            r2_score = 85 + (r2 - 0.70) / 0.30 * 15
+        elif r2 >= 0.40:
+            r2_score = 60 + (r2 - 0.40) / 0.30 * 25
         else:
-            r2_score = max(10, r2 * 100)
+            r2_score = 40 + r2 * 50
 
         return max(0, min(100, slope_score * 0.55 + r2_score * 0.45))
 
     def _strength_volume(self, strength):
-        """子因子B：量能积累确认（放量上涨+OBV趋势+背离检测）"""
+        """子因子B：量能积累确认（连续溢价+OBV+背离检测）"""
         up = strength[strength['ret'] > 0]
         if len(up) < 3:
             return 25
@@ -457,33 +486,30 @@ class StockScorer:
         all_avg_vr = strength['vol_ratio'].mean()
         up_avg_vr = up['vol_ratio'].mean()
 
-        # 上涨日量比溢价
+        # 上涨日量比溢价: sigmoid — premium>1.0 即好
         if all_avg_vr > 0:
             premium = up_avg_vr / all_avg_vr
-            if premium >= 1.15:
-                premium_score = 90
-            elif premium >= 1.05:
-                premium_score = 65 + (premium - 1.05) / 0.10 * 25
-            elif premium >= 1.0:
-                premium_score = 45 + (premium - 1.0) / 0.05 * 20
-            else:
-                premium_score = max(10, premium * 45)
+            premium_score = self._sigmoid(premium, 1.08, 15.0)
         else:
             premium_score = 50
 
-        # OBV 趋势
-        from scipy import stats as sp_stats
+        # OBV 趋势: 连续 — 归一化
         x = np.arange(len(strength))
-        obv_slope, _, obv_r2, _, _ = sp_stats.linregress(x, strength['obv'].values)
-        obv_trend = 80 if obv_slope > 0 else 25
+        obv_slope, _, obv_r2, _, _ = stats.linregress(x, strength['obv'].values)
+        obv_mean = abs(strength['obv'].mean())
+        if obv_mean > 0:
+            obv_trend = 50 + np.clip(obv_slope / obv_mean * 100, -30, 50)
+        else:
+            obv_trend = 50
         obv_str = min(100, max(10, obv_r2 * 100))
 
-        # 量价背离：价涨量不跟
-        close_slope, _, _, _, _ = sp_stats.linregress(x, strength['close'].values)
+        # 量价背离: 连续 — 价涨量不跟按程度衰减
+        close_slope, _, _, _, _ = stats.linregress(x, strength['close'].values)
         if close_slope > 0 and obv_slope <= 0:
             div_penalty = 20
-        elif close_slope > 0 and obv_slope / max(close_slope, 1e-10) < 0.3:
-            div_penalty = 8
+        elif close_slope > 0:
+            ratio = obv_slope / max(close_slope, 1e-10)
+            div_penalty = self._sigmoid(ratio, 0.5, -5.0) * 0.20  # ratio低→惩罚高
         else:
             div_penalty = 0
 
@@ -492,67 +518,55 @@ class StockScorer:
         ))
 
     def _strength_pullback(self, strength, washout):
-        """子因子C：回调有序性（深度+缩量+底部形态）"""
+        """子因子C：回调有序性（深度bell + 缩量sigmoid + 底部收敛）"""
         peak_val = strength['close'].max()
         end_val = strength['close'].iloc[-1]
         dd = (peak_val - end_val) / peak_val if peak_val > 0 else 0
 
-        # 回调深度：理想区间 20%-40%
-        if 0.20 <= dd <= 0.40:
-            depth_score = 85
-        elif 0.10 <= dd < 0.20:
-            depth_score = 55 + (dd - 0.10) / 0.10 * 30
-        elif 0.40 < dd <= 0.60:
-            depth_score = 85 - (dd - 0.40) / 0.20 * 50
-        elif dd < 0.05:
-            depth_score = 30  # 几乎没回调——洗盘不充分
+        # 回调深度 (35%): bell — 最优25%, sigma=12%
+        depth_score = self._bell(dd, 0.25, 0.12)
+        if dd < 0.05:
+            depth_score *= 0.4  # 几乎没回调——洗盘不充分
         elif dd > 0.60:
-            depth_score = 18  # 回调太深——趋势可能已坏
-        else:
-            depth_score = 45
+            depth_score *= 0.3  # 回调太深——趋势可能已坏
 
-        # 回调阶段缩量
+        # 回调阶段缩量 (35%): sigmoid
         peak_idx = strength['close'].idxmax()
         pullback = strength.loc[peak_idx:]
         down_in_pb = pullback[pullback['ret'] < 0]
         if len(down_in_pb) >= 2:
             avg_shrink = down_in_pb['vol_ratio'].mean()
-            shrink_score = max(0, min(100, (1.0 - avg_shrink) * 200))
+            shrink_score = self._sigmoid(avg_shrink, 0.75, 8.0)
         else:
             shrink_score = 40
 
-        # 底部形态（强度窗口末尾振幅收敛）
+        # 底部形态 (30%): 振幅std + 价格平坦 — 连续
         bottom = strength.tail(5)
         amp_std = bottom['amplitude'].std()
         price_flat = abs(bottom['close'].iloc[-1] / bottom['close'].iloc[0] - 1)
-        if amp_std < 0.015 and price_flat < 0.03:
-            bottom_score = 90
-        elif amp_std < 0.025 and price_flat < 0.06:
-            bottom_score = 68
-        elif amp_std < 0.04:
-            bottom_score = 48
-        else:
-            bottom_score = 28
+        amp_q = self._sigmoid(amp_std, 0.02, -200.0)
+        flat_q = self._bell(price_flat, 0, 0.03)
+        bottom_score = amp_q * 0.5 + flat_q * 0.5
 
         return max(0, min(100,
             depth_score * 0.35 + shrink_score * 0.35 + bottom_score * 0.30
         ))
 
     def _strength_relative(self, strength):
-        """子因子D：相对优势 vs 沪深300"""
+        """子因子D：相对优势 vs 沪深300 (sigmoid超额 + sigmoid胜率)"""
         if self.index_returns is None or len(self.index_returns) == 0:
-            return 50  # 无指数数据 → 中性
+            return 50
 
         excess_sum = 0.0
         win_count = 0
         total = 0
 
         for _, row in strength.iterrows():
-            d = row['date']
-            if hasattr(d, 'strftime'):
-                d_str = d.strftime('%Y-%m-%d')
+            d_val = row['date']
+            if hasattr(d_val, 'strftime'):
+                d_str = d_val.strftime('%Y-%m-%d')
             else:
-                d_str = str(d)[:10]
+                d_str = str(d_val)[:10]
 
             if d_str not in self.index_returns.index:
                 continue
@@ -568,31 +582,14 @@ class StockScorer:
         if total < 5:
             return 50
 
-        avg_excess = excess_sum / total * 100  # 日均超额收益(%)
-        win_rate = win_count / total
-
-        # 年化超额收益
+        # 年化超额收益: sigmoid — 0%→50分, 15%→75分, 30%→95分
+        avg_excess = excess_sum / total * 100
         annual_excess = avg_excess * 250
-        if annual_excess >= 25:
-            excess_score = 95
-        elif annual_excess >= 12:
-            excess_score = 72 + (annual_excess - 12) / 13 * 23
-        elif annual_excess >= 0:
-            excess_score = 48 + annual_excess / 12 * 24
-        elif annual_excess >= -15:
-            excess_score = 25 + (annual_excess + 15) / 15 * 23
-        else:
-            excess_score = max(5, 25 + annual_excess / 30 * 20)
+        excess_score = self._sigmoid(annual_excess, 8, 0.06)
 
-        # 胜率
-        if win_rate >= 0.62:
-            wr_score = 90
-        elif win_rate >= 0.52:
-            wr_score = 62 + (win_rate - 0.52) / 0.10 * 28
-        elif win_rate >= 0.42:
-            wr_score = 40 + (win_rate - 0.42) / 0.10 * 22
-        else:
-            wr_score = max(10, win_rate * 80)
+        # 胜率: sigmoid — 50%→50分, 55%→70分, 60%→88分
+        win_rate = win_count / total
+        wr_score = self._sigmoid(win_rate, 0.52, 20.0)
 
         return max(0, min(100, excess_score * 0.55 + wr_score * 0.45))
 

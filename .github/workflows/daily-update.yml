@@ -84,18 +84,35 @@ jobs:
       - name: Run screening for new dates
         run: python batch_screen.py --latest
 
-      - name: Slim database (keep last 90 days)
+      - name: Slim database (drop unused tables + keep 90 days)
         run: python slim_db.py
 
-      # ── 保存数据库到 cache ──
+      - name: Generate static site
+        run: python generate_static.py
+
+      # ── 数据质量检查 ──
+      - name: Data quality check
+        run: |
+          python -c "
+          from data_fetcher import check_date_completeness
+          from datetime import datetime
+          today = datetime.now().strftime('%Y-%m-%d')
+          cnt, ok = check_date_completeness(today, min_stocks=4000)
+          print(f'[quality] {today}: {cnt} stocks, {\"OK\" if ok else \"INCOMPLETE\"}')
+          if cnt < 1000:
+              print('[quality] WARNING: Severe data shortage, site will show sparse data badge')
+          elif cnt < 4000:
+              print('[quality] WARNING: Partial data day')
+          else:
+              print('[quality] Data complete')
+          "
+
+      # ── 保存精简后的数据库到 cache ──
       - name: Save database to cache
         uses: actions/cache/save@v4
         with:
           path: stock_data.db
           key: stock-db-${{ github.run_id }}
-
-      - name: Generate static site
-        run: python generate_static.py
 
       # ── 提交并推送静态文件 ──
       - name: Commit and push static files
