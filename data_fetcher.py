@@ -8,7 +8,6 @@ baostock API 数据获取模块
 import baostock as bs
 import pandas as pd
 from datetime import datetime, timedelta
-from tqdm import tqdm
 import time
 import json
 import os
@@ -277,14 +276,11 @@ def _count_trading_days(start: str, end: str) -> int:
 def fetch_incremental_dates(start_date: str, end_date: str):
     """
     轻量级增量获取：仅用于拉取少量新日期（1-5天）的日度行情。
-    - 不做 _stock_is_complete 逐只检查（日期增量时所有股票都需要新数据）
-    - 不写断点续传文件（短任务中断重跑即可）
-    - 更快间隔 + 单会话 + 无批次重登
-    - 1天数据 ≈ 5-8分钟完成（vs 全量流程 25-30分钟）
     """
-    SLEEP_SINGLE = 0.05       # 增量拉取间隔更短（baostock 对小查询更宽松）
-    DB_COMMIT_EVERY = 100     # 更大的提交批次
-    THROTTLE_COOLDOWN = 60    # 限流冷却
+    SLEEP_SINGLE = 0.05
+    DB_COMMIT_EVERY = 100
+    THROTTLE_COOLDOWN = 60
+    PROGRESS_EVERY = 200       # 每200只打印进度（比500更密）
 
     conn = db_manager.get_conn()
     try:
@@ -296,7 +292,9 @@ def fetch_incremental_dates(start_date: str, end_date: str):
         print("[fetch_incr] 无股票代码，跳过")
         return 0, 0
 
-    print(f"[fetch_incr] 快速增量: {start_date} ~ {end_date}, {len(codes)} 只股票")
+    total = len(codes)
+    print(f"[fetch_incr] 快速增量: {start_date} ~ {end_date}, {total} 只股票")
+    _print_progress_bar(0, total, 0, 0, 0)
 
     _login()
     db_conn = db_manager.get_conn()
@@ -306,6 +304,7 @@ def fetch_incremental_dates(start_date: str, end_date: str):
     empty = 0
     consecutive_fails = 0
     since_commit = 0
+    last_print = 0  # 上次打印时的完成数
 
     for i, code in enumerate(codes):
         try:
@@ -326,14 +325,12 @@ def fetch_incremental_dates(start_date: str, end_date: str):
 
         time.sleep(SLEEP_SINGLE)
 
-        # 定期提交
         if since_commit >= DB_COMMIT_EVERY:
             db_conn.commit()
             since_commit = 0
 
-        # 限流检测
         if consecutive_fails >= 5:
-            print(f"  [THROTTLE] 连续 {consecutive_fails} 次错误，冷却 {THROTTLE_COOLDOWN}s...")
+            print(f"\n  [THROTTLE] {consecutive_fails} 连续错误, 冷却 {THROTTLE_COOLDOWN}s...")
             db_conn.commit()
             since_commit = 0
             _logout()
@@ -344,18 +341,26 @@ def fetch_incremental_dates(start_date: str, end_date: str):
                 pass
             consecutive_fails = 0
 
-        # 进度日志 (每500只)
-        if (i + 1) % 500 == 0:
-            pct = (i + 1) / len(codes) * 100
-            print(f"  ... {i+1}/{len(codes)} ({pct:.0f}%) 成功={success} 空={empty} 失败={fail}")
+        # 进度条 (每200只或最后一只)
+        if (i + 1) % PROGRESS_EVERY == 0 or (i + 1) == total:
+            _print_progress_bar(i + 1, total, success, empty, fail)
 
     db_conn.commit()
     db_conn.close()
     _logout()
 
-    print(f"[fetch_incr] 完成: 成功={success}, 无数据={empty}, 失败={fail}, "
-          f"覆盖率={success}/{len(codes)} ({success/len(codes)*100:.1f}%)")
+    print(f"\n[fetch_incr] 完成: {success}只有数据, {empty}只空(退市/停牌), {fail}只失败")
     return success, fail
+
+
+def _print_progress_bar(done, total, success, empty, fail):
+    """打印进度条: [===   ] 40% (2000/5000) ok=1950 empty=45 fail=5"""
+    pct = done / total * 100
+    bar_len = 30
+    filled = int(bar_len * done / total)
+    bar = '=' * filled + ' ' * (bar_len - filled)
+    print(f'  [{bar}] {pct:5.1f}% ({done}/{total})  '
+          f'ok={success} empty={empty} fail={fail}')
 
 
 # ==================== 批量获取（断点续传版） ====================
@@ -436,7 +441,10 @@ def fetch_and_store_all(start_date: str = None, end_date: str = None):
               f"({batch_start+1}-{batch_start+len(batch)}), "
               f"已完成 {success_count}, 失败 {fail_count}, 总计 {len(done_set)}")
 
-        for code in tqdm(batch, desc=f"Batch {batch_num}", unit="stock", leave=False):
+        batch_total = len(batch)
+        for j, code in enumerate(batch):
+            if (j + 1) % 50 == 0 or j == 0:
+                _print_progress_bar(j + 1, batch_total, success_count, empty_count, fail_count)
             try:
                 df, is_api_error = fetch_daily_single(code, start_date, end_date)
                 if not df.empty:
@@ -464,7 +472,7 @@ def fetch_and_store_all(start_date: str = None, end_date: str = None):
                 fail_count += 1
                 consecutive_fails += 1
                 if consecutive_fails <= 3:
-                    tqdm.write(f"  [ERR] {code}: {e}")
+                    print(f"  [ERR] {code}: {e}")
 
             # 每 N 只提交一次 DB + 存进度（防止意外中断丢进度）
             if since_last_commit >= DB_COMMIT_EVERY:
@@ -475,7 +483,7 @@ def fetch_and_store_all(start_date: str = None, end_date: str = None):
 
             # ===== 限流检测：仅 API 真错误（非空数据）触发 =====
             if consecutive_fails >= 5:
-                tqdm.write(f"  [THROTTLE] 连续 {consecutive_fails} 次 API 错误，疑似限流，冷却 {THROTTLE_COOLDOWN}s...")
+                print(f"  [THROTTLE] 连续 {consecutive_fails} 次 API 错误，疑似限流，冷却 {THROTTLE_COOLDOWN}s...")
                 db_conn.commit()  # 限流前先提交已有数据
                 _save_progress({'done_codes': list(done_set), 'total_fetched': len(done_set),
                                 'last_code': code, 'start_date': start_date, 'end_date': end_date})
@@ -493,11 +501,11 @@ def fetch_and_store_all(start_date: str = None, end_date: str = None):
                             break
                     except Exception:
                         pass
-                    tqdm.write(f"  [LOGIN RETRY] 登录重试 {login_attempt+1}/3，等待 {HARD_COOLDOWN}s...")
+                    print(f"  [LOGIN RETRY] 登录重试 {login_attempt+1}/3，等待 {HARD_COOLDOWN}s...")
                     time.sleep(HARD_COOLDOWN)
 
                 if not login_ok:
-                    tqdm.write(f"  [FATAL] 无法重新登录，继续尝试剩余股票...")
+                    print(f"  [FATAL] 无法重新登录，继续尝试剩余股票...")
                     consecutive_fails = 0
                     continue
 
@@ -700,36 +708,66 @@ def backfill_recent_dates(days: int = 3, min_stocks: int = 1000):
 
 def fetch_with_retry(max_attempts: int = 2, wait_minutes: int = 10):
     """
-    一站式数据更新：先回填缺口 → 增量拉新 → 完整性检查 → 自适应重试。
+    一站式数据更新：回填缺口 → 增量拉新 → 完整性检查 → 自适应重试。
     不强制要求「今天」有数据，检查 DB 实际最新日期是否完整。
     """
     import time as time_mod
+    from datetime import datetime as dt
 
-    # 先回填最近 3 天的数据缺口（仅补已有数据中的空洞，不等未发布日期）
+    def _ts():
+        return dt.now().strftime('%H:%M:%S')
+
+    total_start = dt.now()
+
+    # ============================================
+    # Phase 1: 回填缺口
+    # ============================================
+    print(f"\n{'='*60}")
+    print(f"[{_ts()}] Phase 1/3: 回填最近3天数据缺口")
+    print(f"{'='*60}")
+    phase_start = dt.now()
     backfill_recent_dates(days=3, min_stocks=1000)
+    print(f"[{_ts()}] Phase 1 完成 (耗时 {(dt.now()-phase_start).total_seconds():.0f}s)")
 
+    # ============================================
+    # Phase 2: 增量拉取 + 完整性检查
+    # ============================================
     for attempt in range(1, max_attempts + 1):
-        print(f"\n[fetch_with_retry] 第 {attempt}/{max_attempts} 次拉取...")
+        print(f"\n{'='*60}")
+        print(f"[{_ts()}] Phase 2/3: 增量拉取 (第 {attempt}/{max_attempts} 次)")
+        print(f"{'='*60}")
+        phase_start = dt.now()
+
         update_data(update_index=True)
 
-        # ── 智能检查：用 DB 实际最新日期 ──
-        latest_date, cnt = _get_latest_date_count()
-        print(f"[fetch_with_retry] DB 最新日期: {latest_date}, {cnt} 只股票")
+        print(f"[{_ts()}] 拉取完成 (耗时 {(dt.now()-phase_start).total_seconds():.0f}s)")
 
-        if latest_date is None:
-            print("[fetch_with_retry] DB 为空")
-        elif cnt >= 4000:
-            print(f"[fetch_with_retry] {latest_date} 数据完整 ({cnt} 只)，继续")
+        # ── 智能检查 ──
+        latest_date, cnt = _get_latest_date_count()
+
+        status = ('完整' if cnt >= 4000 else ('部分' if cnt >= 1000 else '稀疏'))
+        print(f"[{_ts()}] DB 最新: {latest_date} | {cnt} 只股票 | {status}")
+
+        if cnt >= 4000:
+            total_elapsed = (dt.now() - total_start).total_seconds()
+            print(f"\n[{'='*60}]")
+            print(f"[{_ts()}] ✅ 数据完整! 总耗时 {total_elapsed:.0f}s ({total_elapsed/60:.1f}min)")
+            print(f"[{'='*60}]")
             return True
-        elif cnt >= 1000:
-            print(f"[fetch_with_retry] {latest_date} 部分数据 ({cnt} 只)")
-        else:
-            print(f"[fetch_with_retry] {latest_date} 仅 {cnt} 只（可能节假日）")
 
         if attempt < max_attempts:
             wait = 5 if cnt >= 2000 else (10 if cnt >= 500 else wait_minutes)
-            print(f"[fetch_with_retry] 等待 {wait} 分钟后重试...")
-            time_mod.sleep(wait * 60)
+            print(f"[{_ts()}] Phase 3/3: 等待 {wait} 分钟后重试...")
+            for m in range(wait, 0, -1):
+                if m % 5 == 0 or m <= 3:
+                    print(f"  [{_ts()}] ... 剩余 {m} 分钟")
+                time_mod.sleep(60)
 
-    print(f"[fetch_with_retry] {max_attempts} 次后接受当前数据状态，继续执行")
+    # ============================================
+    # 接受当前状态
+    # ============================================
+    total_elapsed = (dt.now() - total_start).total_seconds()
+    print(f"\n[{'='*60}]")
+    print(f"[{_ts()}] ⚠ 数据不完整但继续执行 (总耗时 {total_elapsed:.0f}s / {total_elapsed/60:.1f}min)")
+    print(f"[{'='*60}]")
     return False
