@@ -701,23 +701,43 @@ def backfill_recent_dates(days: int = 3, min_stocks: int = 1000):
 def fetch_with_retry(max_attempts: int = 3, wait_minutes: int = 30):
     """
     拉取数据并检查完整性，不完整则等待重试。
-    返回最终是否成功获取到完整数据。
+    智能检测：不强制要求「今天」有数据，而是检查 DB 中实际最新日期是否完整。
+    baostock 通常 T+1 延迟，周末/节假日无数据。
     """
     import time as time_mod
-    end = datetime.now().strftime('%Y-%m-%d')
 
     for attempt in range(1, max_attempts + 1):
         print(f"\n[fetch_with_retry] 第 {attempt}/{max_attempts} 次尝试...")
         update_data(update_index=True)
-        cnt, ok = check_date_completeness(end, min_stocks=4000)
-        print(f"[fetch_with_retry] 最新日期 {end}: {cnt} 只股票, {'完整' if ok else '不完整'}")
 
-        if ok:
+        # ── 智能检查：用 DB 实际最新日期，而非死磕「今天」 ──
+        latest_date, cnt = _get_latest_date_count()
+        print(f"[fetch_with_retry] DB 最新日期: {latest_date}, {cnt} 只股票")
+
+        if latest_date is None:
+            print("[fetch_with_retry] DB 为空，继续等待...")
+        elif cnt >= 4000:
+            print(f"[fetch_with_retry] {latest_date} 数据完整 ({cnt} 只)，继续执行")
             return True
+        elif cnt >= 1000:
+            # 部分数据：可能是当天 baostock 还在陆续发布
+            print(f"[fetch_with_retry] {latest_date} 数据部分 ({cnt} 只)，"
+                  f"{'等待重试' if attempt < max_attempts else '接受部分数据继续'}")
+        else:
+            # 稀疏数据（如周末/节假日）
+            if latest_date:
+                print(f"[fetch_with_retry] {latest_date} 仅 {cnt} 只，可能是节假日/周末")
 
         if attempt < max_attempts:
-            print(f"[fetch_with_retry] 数据不完整，等待 {wait_minutes} 分钟后重试...")
-            time_mod.sleep(wait_minutes * 60)
+            # 自适应等待：数据越少等越久，但上限20分钟
+            if cnt >= 2000:
+                wait = min(15, wait_minutes)  # 快齐了，等短些
+            elif cnt >= 500:
+                wait = min(20, wait_minutes)  # 中等
+            else:
+                wait = wait_minutes           # 几乎没数据，按原计划等
+            print(f"[fetch_with_retry] 等待 {wait} 分钟后重试...")
+            time_mod.sleep(wait * 60)
 
     print(f"[fetch_with_retry] {max_attempts} 次尝试后仍不完整，继续执行")
     return False

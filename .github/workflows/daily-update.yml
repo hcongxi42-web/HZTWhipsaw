@@ -67,7 +67,7 @@ jobs:
           from data_fetcher import fetch_with_retry, backfill_recent_dates
           # 先回填最近3天缺口，再拉取最新数据（最多3次重试，间隔30分钟）
           backfill_recent_dates(days=3, min_stocks=1000)
-          fetch_with_retry(max_attempts=3, wait_minutes=30)
+          fetch_with_retry(max_attempts=3, wait_minutes=15)
           "
 
       - name: Run screening for new dates
