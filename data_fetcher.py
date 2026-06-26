@@ -272,6 +272,92 @@ def _count_trading_days(start: str, end: str) -> int:
     return int(calendar_days * 250 / 365)
 
 
+# ==================== 快速增量获取（短日期范围专用） ====================
+
+def fetch_incremental_dates(start_date: str, end_date: str):
+    """
+    轻量级增量获取：仅用于拉取少量新日期（1-5天）的日度行情。
+    - 不做 _stock_is_complete 逐只检查（日期增量时所有股票都需要新数据）
+    - 不写断点续传文件（短任务中断重跑即可）
+    - 更快间隔 + 单会话 + 无批次重登
+    - 1天数据 ≈ 5-8分钟完成（vs 全量流程 25-30分钟）
+    """
+    SLEEP_SINGLE = 0.05       # 增量拉取间隔更短（baostock 对小查询更宽松）
+    DB_COMMIT_EVERY = 100     # 更大的提交批次
+    THROTTLE_COOLDOWN = 60    # 限流冷却
+
+    conn = db_manager.get_conn()
+    try:
+        codes = db_manager.get_all_stock_codes()
+    finally:
+        conn.close()
+
+    if not codes:
+        print("[fetch_incr] 无股票代码，跳过")
+        return 0, 0
+
+    print(f"[fetch_incr] 快速增量: {start_date} ~ {end_date}, {len(codes)} 只股票")
+
+    _login()
+    db_conn = db_manager.get_conn()
+
+    success = 0
+    fail = 0
+    empty = 0
+    consecutive_fails = 0
+    since_commit = 0
+
+    for i, code in enumerate(codes):
+        try:
+            df, is_api_error = fetch_daily_single(code, start_date, end_date)
+            if not df.empty:
+                db_manager.upsert_daily_batch(df, conn=db_conn)
+                since_commit += 1
+                success += 1
+                consecutive_fails = 0
+            elif is_api_error:
+                fail += 1
+                consecutive_fails += 1
+            else:
+                empty += 1
+        except Exception:
+            fail += 1
+            consecutive_fails += 1
+
+        time.sleep(SLEEP_SINGLE)
+
+        # 定期提交
+        if since_commit >= DB_COMMIT_EVERY:
+            db_conn.commit()
+            since_commit = 0
+
+        # 限流检测
+        if consecutive_fails >= 5:
+            print(f"  [THROTTLE] 连续 {consecutive_fails} 次错误，冷却 {THROTTLE_COOLDOWN}s...")
+            db_conn.commit()
+            since_commit = 0
+            _logout()
+            time.sleep(THROTTLE_COOLDOWN)
+            try:
+                bs.login()
+            except Exception:
+                pass
+            consecutive_fails = 0
+
+        # 进度日志 (每500只)
+        if (i + 1) % 500 == 0:
+            pct = (i + 1) / len(codes) * 100
+            print(f"  ... {i+1}/{len(codes)} ({pct:.0f}%) 成功={success} 空={empty} 失败={fail}")
+
+    db_conn.commit()
+    db_conn.close()
+    _logout()
+
+    print(f"[fetch_incr] 完成: 成功={success}, 无数据={empty}, 失败={fail}, "
+          f"覆盖率={success}/{len(codes)} ({success/len(codes)*100:.1f}%)")
+    return success, fail
+
+
 # ==================== 批量获取（断点续传版） ====================
 
 def fetch_and_store_all(start_date: str = None, end_date: str = None):
@@ -489,12 +575,17 @@ def update_data(update_index: bool = True):
             fetch_and_store_index(start_date=config.START_DATE, end_date=db_latest)
         return stock_res
 
-    # 3. 股票都齐了，检查日期增量
+    # 3. 股票都齐了，检查日期增量（走快速通道：短日期范围不逐只检查）
     if db_latest < end:
         start_dt = datetime.strptime(db_latest, '%Y-%m-%d') + timedelta(days=1)
         start = start_dt.strftime('%Y-%m-%d')
-        print(f"[data_fetcher] 日期增量更新: {start} ~ {end}")
-        stock_res = fetch_and_store_all(start_date=start, end_date=end)
+        delta_days = (datetime.strptime(end, '%Y-%m-%d') - datetime.strptime(start, '%Y-%m-%d')).days
+        print(f"[data_fetcher] 日期增量更新: {start} ~ {end} ({delta_days+1}天)")
+        # 短日期范围(≤5天)走快速增量通道，长范围走完整断点续传
+        if delta_days <= 5:
+            stock_res = fetch_incremental_dates(start_date=start, end_date=end)
+        else:
+            stock_res = fetch_and_store_all(start_date=start, end_date=end)
         if update_index:
             fetch_and_store_index(start_date=start, end_date=end)
         return stock_res
@@ -591,9 +682,9 @@ def backfill_recent_dates(days: int = 3, min_stocks: int = 1000):
     _login()
     try:
         for d_str, cnt in gap_dates:
-            print(f"[backfill] 日期 {d_str} 仅有 {cnt} 只股票，补拉中...")
+            print(f"[backfill] 日期 {d_str} 仅有 {cnt} 只股票，快速补拉...")
             try:
-                fetch_and_store_all(start_date=d_str, end_date=d_str)
+                fetch_incremental_dates(start_date=d_str, end_date=d_str)
                 # 同时补拉指数
                 fetch_and_store_index(start_date=d_str, end_date=d_str)
                 filled.append(d_str)
