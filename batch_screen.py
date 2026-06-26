@@ -420,23 +420,47 @@ class StockScorer:
 
     # ── 股票强度 (Stock Strength) ──
     def score_stock_strength(self):
-        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势"""
+        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势（含趋势熔断）"""
         d = self.df
         n = len(d)
 
         # 强度窗口：取前 N-15 天（后15天是现有洗盘窗口，不重叠）
         strength_end = n - 15
         if strength_end < 12:
-            return 35  # 历史数据不足，给中性偏低分
+            return 5  # 修改四：数据不足 → 极低分（原35太高）
 
         strength = d.iloc[:strength_end].copy()
         washout = d.iloc[strength_end:]
 
         if len(strength) < 10:
-            return 35
+            return 5
+
+        # === 修改一：趋势熔断 ===
+        # 先算趋势斜率，如果趋势为负或极弱，直接短路返回极低分
+        x = np.arange(len(strength))
+        log_y = np.log(np.maximum(strength['close'].values, 0.01))
+        slope, _, r_value, _, _ = stats.linregress(x, log_y)
+        annual_slope = slope * 250 * 100  # 年化%
+
+        # 硬闸1：明显下跌趋势（年化 < -5%），直接给 0-10 分
+        if annual_slope < -5:
+            return 5
+
+        # 硬闸2：零增长或微跌（年化 -5% ~ 0%），给 5-15 分
+        if annual_slope < 0:
+            return max(5, min(15, 10 + annual_slope * 1.0))  # -5%→5分, -1%→11分
+
+        # 硬闸3：横盘无趋势（年化 0%~3%）且 R² 极低，随机游走
+        r2 = r_value ** 2
+        if annual_slope < 3 and r2 < 0.30:
+            return 12
 
         # A. 前期趋势强度 (35%)
         trend_score = self._strength_trend(strength)
+
+        # 二次保险：_strength_trend 仍给出低分，直接压制
+        if trend_score < 18:
+            return max(0, min(15, trend_score * 0.5))
 
         # B. 量能积累确认 (25%)
         volume_score = self._strength_volume(strength)
@@ -453,19 +477,31 @@ class StockScorer:
         ))
 
     def _strength_trend(self, strength):
-        """子因子A：前期趋势强度（对数OLS斜率+R², bell曲线）"""
+        """子因子A：前期趋势强度（对数OLS斜率+R², bell曲线）
+        修改二：负斜率直接判死刑，防止因子加权"救"回来"""
         x = np.arange(len(strength))
         log_y = np.log(np.maximum(strength['close'].values, 0.01))
         slope, _, r_value, _, _ = stats.linregress(x, log_y)
         r2 = r_value ** 2
         annual_slope = slope * 250 * 100  # 年化%
 
+        # === 负斜率直接判死刑 ===
+        if annual_slope <= 0:
+            # 高R²的阴跌是最危险的（持续稳定下跌）
+            if r2 >= 0.60:
+                return 3   # 稳定阴跌，接近0分
+            else:
+                return 8   # 无趋势震荡下行
+
         # Bell: 最优年化斜率25%, sigma=18%
         slope_score = self._bell(annual_slope, 25, 18)
+
         if annual_slope > 80:
             slope_score *= 0.5
-        elif annual_slope < 5:
-            slope_score *= 0.4
+        elif annual_slope < 5:    # 0~5% 正斜率，仍然偏弱
+            slope_score *= 0.25   # 从0.4→0.25，更严
+        elif annual_slope < 15:   # 新增：15%以下温和上涨也适当打折
+            slope_score *= 0.70
 
         # R²: 高加分, 低不扣 — 线性映射带保底
         if r2 >= 0.70:
@@ -475,7 +511,12 @@ class StockScorer:
         else:
             r2_score = 40 + r2 * 50
 
-        return max(0, min(100, slope_score * 0.55 + r2_score * 0.45))
+        # 新增：趋势斜率很低（<10%），R²再高也不能救太多
+        raw = slope_score * 0.55 + r2_score * 0.45
+        if annual_slope < 10:
+            raw *= 0.6  # 斜率不够，R²是"稳定横盘"而非"稳定上涨"
+
+        return max(0, min(100, raw))
 
     def _strength_volume(self, strength):
         """子因子B：量能积累确认（连续溢价+OBV+背离检测）"""
@@ -518,17 +559,29 @@ class StockScorer:
         ))
 
     def _strength_pullback(self, strength, washout):
-        """子因子C：回调有序性（深度bell + 缩量sigmoid + 底部收敛）"""
+        """子因子C：回调有序性（深度bell + 缩量sigmoid + 底部收敛）
+        修改三：识别主跌浪——peak在窗口前20%就见顶=不是回调是见顶下跌"""
         peak_val = strength['close'].max()
         end_val = strength['close'].iloc[-1]
+
+        # === 新增：判断 peak 出现的时间位置 ===
+        peak_idx_pos = strength['close'].idxmax()
+        # peak 在窗口前 20% 就见顶，之后一路跌 → 这不是"回调"，是"见顶下跌"
+        if peak_idx_pos < len(strength) * 0.20:
+            post_peak = strength.loc[peak_idx_pos:]
+            if post_peak['close'].iloc[-1] < peak_val * 0.85:
+                return 5  # 主跌浪，不是洗盘回调
+
         dd = (peak_val - end_val) / peak_val if peak_val > 0 else 0
 
         # 回调深度 (35%): bell — 最优25%, sigma=12%
         depth_score = self._bell(dd, 0.25, 0.12)
         if dd < 0.05:
-            depth_score *= 0.4  # 几乎没回调——洗盘不充分
+            depth_score *= 0.25  # 从0.4→0.25，没回调就是没洗盘
         elif dd > 0.60:
-            depth_score *= 0.3  # 回调太深——趋势可能已坏
+            return 3              # 跌超60%，直接给接近0分
+        elif dd > 0.50:
+            depth_score *= 0.1    # 从0.3→0.1，跌太深趋势已坏
 
         # 回调阶段缩量 (35%): sigmoid
         peak_idx = strength['close'].idxmax()
