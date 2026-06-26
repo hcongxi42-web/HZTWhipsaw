@@ -87,6 +87,33 @@
       <span style="color:#8B7A4A;margin-left:4px;">●</span> 部分
       <span style="color:#8B3A3A;margin-left:4px;">●</span> 稀疏
     </div>
+
+    <!-- 存储监控 -->
+    <div class="storage-monitor" id="storageMonitor">
+      <div class="storage-title">📦 存储监控</div>
+      <div class="storage-row">
+        <span class="storage-label">仓库</span>
+        <span class="storage-bar-bg">
+          <span class="storage-bar-fill storage-bar-repo" id="storageBarRepo"></span>
+        </span>
+        <span class="storage-val" id="storageValRepo">--</span>
+      </div>
+      <div class="storage-row">
+        <span class="storage-label">缓存</span>
+        <span class="storage-bar-bg">
+          <span class="storage-bar-fill storage-bar-cache" id="storageBarCache"></span>
+        </span>
+        <span class="storage-val" id="storageValCache">--</span>
+      </div>
+      <div class="storage-row">
+        <span class="storage-label">页面</span>
+        <span class="storage-bar-bg">
+          <span class="storage-bar-fill storage-bar-pages" id="storageBarPages"></span>
+        </span>
+        <span class="storage-val" id="storageValPages">--</span>
+      </div>
+      <div class="storage-updated" id="storageUpdated">加载中...</div>
+    </div>
   </aside>
 
   <main class="table-panel">

@@ -343,6 +343,63 @@ header h1 .subtitle {
 .detail-stat .val { font-size: 16px; font-weight: 400; color: var(--text); }
 .detail-stat .lbl { font-size: 10px; color: var(--text-dim); margin-top: 1px; font-style: italic; }
 
+/* ── Storage Monitor ── */
+.storage-monitor {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 0.5px solid var(--border);
+}
+.storage-title {
+  font-size: 10px;
+  color: var(--text-dim);
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  margin-bottom: 8px;
+}
+.storage-row {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 4px;
+}
+.storage-label {
+  font-size: 10px;
+  color: var(--text-dim);
+  width: 26px;
+  text-align: right;
+  flex-shrink: 0;
+}
+.storage-bar-bg {
+  flex: 1;
+  height: 6px;
+  background: #ECEAE6;
+  overflow: hidden;
+  min-width: 0;
+}
+.storage-bar-fill {
+  height: 100%;
+  transition: width 0.4s;
+}
+.storage-bar-repo { background: var(--slate); }
+.storage-bar-cache { background: var(--warm-dark); }
+.storage-bar-pages { background: var(--green); }
+.storage-val {
+  font-size: 9px;
+  color: var(--text-dim);
+  width: 56px;
+  text-align: right;
+  flex-shrink: 0;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+.storage-updated {
+  font-size: 9px;
+  color: var(--text-faint);
+  font-style: italic;
+  margin-top: 4px;
+  text-align: center;
+}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -227,8 +227,32 @@ def main():
     print(f'  ✓ {len(all_codes)} stock history files (with K-line)')
 
     conn.close()
+
+    # ── 生成存储监控数据 ──
+    import time as _time
+    db_size_mb = os.path.getsize(DB_PATH) / (1024 * 1024) if os.path.exists(DB_PATH) else 0
+    docs_size_mb = _dir_size(DOCS_DIR)
+    seed_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data_seed.db')
+    seed_size_mb = os.path.getsize(seed_path) / (1024 * 1024) if os.path.exists(seed_path) else 0
+    code_size_mb = _dir_size(os.path.dirname(os.path.abspath(__file__))) - db_size_mb - docs_size_mb - seed_size_mb
+    if code_size_mb < 0:
+        code_size_mb = 0.5  # fallback
+
+    storage = {
+        'repo_mb': round(seed_size_mb + docs_size_mb + code_size_mb, 1),   # GitHub 仓库大小（不含DB）
+        'cache_mb': round(db_size_mb, 1),                                    # Actions 缓存（= DB文件）
+        'cache_limit_mb': 10240,                                             # GitHub Actions cache 总额度
+        'pages_mb': round(docs_size_mb, 1),                                  # GitHub Pages 站点
+        'db_mb': round(db_size_mb, 1),
+        'updated': _time.strftime('%Y-%m-%d %H:%M UTC', _time.gmtime()),
+    }
+    storage_path = os.path.join(DATA_DIR, 'storage.json')
+    with open(storage_path, 'w', encoding='utf-8') as f:
+        json.dump(storage, f, ensure_ascii=False)
+    print(f'  ✓ storage.json ({db_size_mb:.0f} MB DB, {docs_size_mb:.0f} MB Pages)')
+
     print(f'\n静态站点文件已生成到: {DOCS_DIR}')
-    print(f'总大小: {_dir_size(DOCS_DIR):.1f} MB')
+    print(f'总大小: {docs_size_mb:.1f} MB')
 
 
 def _dir_size(path):
