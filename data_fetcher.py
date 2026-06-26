@@ -294,6 +294,25 @@ def fetch_incremental_dates(start_date: str, end_date: str):
 
     total = len(codes)
     print(f"[fetch_incr] 快速增量: {start_date} ~ {end_date}, {total} 只股票")
+
+    # ── 预检：随机抽3只问baostock，全空则跳过全量拉取 ──
+    import random as _random
+    _login()
+    sample_codes = _random.sample(codes, min(3, len(codes)))
+    sample_has_data = False
+    for sc in sample_codes:
+        sdf, _ = fetch_daily_single(sc, start_date, end_date)
+        if not sdf.empty:
+            sample_has_data = True
+            break
+    _logout()
+
+    if not sample_has_data:
+        print(f"[fetch_incr] 预检: {len(sample_codes)}只样本均无数据, baostock尚未发布此日期范围, 跳过全量拉取 "
+              f"(节省 ~{total * 0.2 / 60:.0f} 分钟)")
+        return 0, 0
+
+    print(f"[fetch_incr] 预检通过, 开始全量拉取 {total} 只")
     _print_progress_bar(0, total, 0, 0, 0)
 
     _login()
