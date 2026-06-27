@@ -35,6 +35,17 @@ def strip_code(code):
     return code
 
 
+def safe_round(val, ndigits=1, default=0.0):
+    """安全 round: 将 NaN/Inf/None 替换为 default，避免 JSON 中出现 NaN（浏览器 JSON.parse 拒绝）"""
+    try:
+        v = float(val or 0)
+    except (TypeError, ValueError):
+        return default
+    if not np.isfinite(v):
+        return default
+    return round(v, ndigits)
+
+
 def get_industry(code, ind_map):
     raw = strip_code(code)
     return ind_map.get(raw, '—')
@@ -128,15 +139,15 @@ def main():
                 'code': code,
                 'name': name_map.get(code, '?')[:8],
                 'rank': int(row['rank']),
-                'total': round(float(row['total']), 1),
-                'washout_quality': round(float(row['washout_quality']), 1),
-                'probe_test': round(float(row['probe_test']), 1),
-                'ma_convergence': round(float(row['ma_convergence']), 1),
-                'stock_strength': round(float(row.get('stock_strength', 0) or 0), 1),
-                'launch_readiness': round(float(row['launch_readiness']), 1),
-                'volume_price_health': round(float(row.get('volume_price_health', 0) or 0), 1),
-                'latest_close': round(float(row['latest_close']), 2),
-                'latest_pctChg': round(float(row['latest_pctChg']), 2),
+                'total': safe_round(row['total'], 1),
+                'washout_quality': safe_round(row['washout_quality'], 1),
+                'probe_test': safe_round(row['probe_test'], 1),
+                'ma_convergence': safe_round(row['ma_convergence'], 1),
+                'stock_strength': safe_round(row.get('stock_strength', 0) or 0, 1),
+                'launch_readiness': safe_round(row['launch_readiness'], 1),
+                'volume_price_health': safe_round(row.get('volume_price_health', 0) or 0, 1),
+                'latest_close': safe_round(row['latest_close'], 2),
+                'latest_pctChg': safe_round(row['latest_pctChg'], 2),
                 'is_limit_up_today': bool(int(row['is_limit_up_today'])),
                 'recent_limit_days': int(row['recent_limit_days']),
                 'probe_count': int(row['probe_count']),
@@ -183,13 +194,13 @@ def main():
             {
                 'date': row['target_date'],
                 'rank': int(row['rank']),
-                'total': round(float(row['total']), 1),
-                'washout_quality': round(float(row['washout_quality']), 1),
-                'probe_test': round(float(row['probe_test']), 1),
-                'ma_convergence': round(float(row['ma_convergence']), 1),
-                'stock_strength': round(float(row.get('stock_strength', 0) or 0), 1),
-                'launch_readiness': round(float(row['launch_readiness']), 1),
-                'volume_price_health': round(float(row.get('volume_price_health', 0) or 0), 1),
+                'total': safe_round(row['total'], 1),
+                'washout_quality': safe_round(row['washout_quality'], 1),
+                'probe_test': safe_round(row['probe_test'], 1),
+                'ma_convergence': safe_round(row['ma_convergence'], 1),
+                'stock_strength': safe_round(row.get('stock_strength', 0) or 0, 1),
+                'launch_readiness': safe_round(row['launch_readiness'], 1),
+                'volume_price_health': safe_round(row.get('volume_price_health', 0) or 0, 1),
             }
             for _, row in df.iterrows()
         ]
@@ -201,13 +212,13 @@ def main():
             kline = [
                 {
                     'date': r['date'],
-                    'open': round(float(r['open']), 2),
-                    'high': round(float(r['high']), 2),
-                    'low': round(float(r['low']), 2),
-                    'close': round(float(r['close']), 2),
+                    'open': safe_round(r['open'], 2),
+                    'high': safe_round(r['high'], 2),
+                    'low': safe_round(r['low'], 2),
+                    'close': safe_round(r['close'], 2),
                     'volume': int(r['volume']),
-                    'pctChg': round(float(r['pctChg']), 2) if r.get('pctChg') is not None else 0,
-                    'turn': round(float(r['turn']), 2) if r.get('turn') is not None else 0,
+                    'pctChg': safe_round(r.get('pctChg'), 2) if r.get('pctChg') is not None else 0,
+                    'turn': safe_round(r.get('turn'), 2) if r.get('turn') is not None else 0,
                 }
                 for r in kline_raw
             ]
