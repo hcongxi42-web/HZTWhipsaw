@@ -151,5 +151,63 @@
 </div>
 
 <script src="static/app.js"></script>
+<script>
+// == DEBUG PANEL: 捕获 chart 渲染错误 ==
+(function(){
+  var dbg = document.createElement('div');
+  dbg.id = '__debug_log';
+  dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#1a1a1a;color:#0f0;font:11px monospace;max-height:180px;overflow:auto;padding:6px 10px;border-top:2px solid #f00;';
+  document.body.appendChild(dbg);
+  function log(msg, color) {
+    dbg.innerHTML += '<div style="color:'+(color||'#0f0')+'">[' + new Date().toLocaleTimeString() + '] ' + msg + '</div>';
+    dbg.scrollTop = dbg.scrollHeight;
+  }
+  log('ECHARTS 诊断已激活', '#ff0');
+  log('typeof echarts = ' + (typeof echarts), typeof echarts==='undefined'?'#f00':'#0f0');
+  if (typeof echarts === 'undefined') {
+    log('ERROR: echarts 未加载! 检查 static/echarts.min.js', '#f00');
+  }
+
+  // Patch renderRadar
+  var _origRenderRadar = window.renderRadar;
+  if (_origRenderRadar) {
+    window.renderRadar = function(stock) {
+      try {
+        log('renderRadar 开始... stock=' + (stock&&stock.code||'?'), '#ff0');
+        var dom = document.getElementById('radarChart');
+        log('  radarChart DOM: ' + (dom?'found '+dom.offsetWidth+'x'+dom.offsetHeight:'NULL'), dom?'#0f0':'#f00');
+        _origRenderRadar(stock);
+        log('  renderRadar 完成', '#0f0');
+      } catch(e) {
+        log('  renderRadar ERROR: ' + e.message, '#f00');
+        console.error(e);
+      }
+    };
+  }
+
+  // Patch renderKline
+  var _origRenderKline = window.renderKline;
+  if (_origRenderKline) {
+    window.renderKline = function(hist) {
+      try {
+        log('renderKline 开始... hist=' + (hist?'yes':'null'), '#ff0');
+        var dom = document.getElementById('klineChart');
+        log('  klineChart DOM: ' + (dom?'found '+dom.offsetWidth+'x'+dom.offsetHeight:'NULL'), dom?'#0f0':'#f00');
+        log('  hist.kline: ' + (hist&&hist.kline?hist.kline.length+'条':'无'), hist&&hist.kline?'#0f0':'#f00');
+        _origRenderKline(hist);
+        log('  renderKline 完成', '#0f0');
+      } catch(e) {
+        log('  renderKline ERROR: ' + e.message, '#f00');
+        console.error(e);
+      }
+    };
+  }
+
+  // Catch all unhandled errors
+  window.addEventListener('error', function(e) {
+    log('GLOBAL ERROR: ' + e.message + ' @ ' + (e.filename||'') + ':' + (e.lineno||''), '#f00');
+  });
+})();
+</script>
 </body>
 </html>
