@@ -152,59 +152,83 @@
 
 <script src="static/app.js"></script>
 <script>
-// == DEBUG v2: 完整诊断 fetch + echarts ==
+// == DEBUG v3: 三图全检 ==
 (function(){
   var dbg = document.createElement('div');
   dbg.id = '__debug_log';
-  dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#1a1a1a;color:#0f0;font:11px monospace;max-height:200px;overflow:auto;padding:6px 10px;border-top:2px solid #f00;';
+  dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#111;color:#0f0;font:10px monospace;max-height:220px;overflow:auto;padding:5px 8px;border-top:2px solid #f00;';
   document.body.appendChild(dbg);
   function log(msg, color) {
     dbg.innerHTML += '<div style="color:'+(color||'#0f0')+'">[' + new Date().toLocaleTimeString() + '] ' + msg + '</div>';
     dbg.scrollTop = dbg.scrollHeight;
   }
-  log('DIAG v2 激活', '#ff0');
-  log('echarts type=' + (typeof echarts) + ' ver=' + ((typeof echarts!=='undefined'&&echarts.version)?echarts.version:'?'), typeof echarts==='undefined'?'#f00':'#0f0');
+  log('DIAG v3 — 三图全检', '#ff0');
+  log('echarts ' + ((typeof echarts!=='undefined'&&echarts.version)?echarts.version:'UNDEFINED'), typeof echarts==='undefined'?'#f00':'#0f0');
 
-  // Patch selectStock to capture fetch errors
-  var _origSelectStock = window.selectStock;
-  if (_origSelectStock) {
-    window.selectStock = function(code) {
-      log('selectStock: ' + code, '#ff0');
-      var stripped = code;
-      for (var p of ['sz.','sh.','bj.']) { if (stripped.startsWith(p)) stripped = stripped.slice(p.length); }
-      log('  stripped: ' + stripped + ' → data/history/' + stripped + '.json', '#aaa');
-      fetch('data/history/' + stripped + '.json').then(function(r) {
-        log('  fetch response: ' + r.status + ' ' + r.statusText + ' ok=' + r.ok, r.ok?'#0f0':'#f00');
-        if (!r.ok) log('  FETCH FAILED: HTTP ' + r.status, '#f00');
+  // Intercept selectStock's internal fetch
+  var origFetch = window.fetch;
+  window.fetch = function(url, opts) {
+    var p = origFetch.apply(this, arguments);
+    if (typeof url === 'string' && url.includes('/history/')) {
+      log('FETCH: ' + url, '#aaa');
+      p.then(function(r) {
+        log('  → ' + r.status + ' ok=' + r.ok + ' len=' + r.headers.get('content-length'), r.ok?'#0f0':'#f00');
       }).catch(function(e) {
-        log('  FETCH ERROR: ' + e.message, '#f00');
+        log('  → ERROR: ' + e.message, '#f00');
       });
-      return _origSelectStock(code);
-    };
-  }
+    }
+    return p;
+  };
 
-  // Patch renderRadar v2
-  var _origRenderRadar2 = window.renderRadar;
-  if (_origRenderRadar2) {
-    window.renderRadar = function(stock) {
+  // Wait for app.js to define functions, then patch all three
+  var _patched = false;
+  function patchAll() {
+    if (_patched) return;
+    if (!window.renderRadar || !window.renderKline || !window.renderHistory) {
+      setTimeout(patchAll, 100); return;
+    }
+    _patched = true;
+
+    var _r = window.renderRadar;
+    window.renderRadar = function(s) {
       try {
-        log('renderRadar: ' + (stock&&stock.code), '#ff0');
+        log('▶ RADAR: ' + (s&&s.code), '#ff0');
+        _r(s);
         var dom = document.getElementById('radarChart');
-        if (!dom) { log('  NO DOM!', '#f00'); return; }
-        log('  DOM ' + dom.offsetWidth + 'x' + dom.offsetHeight, '#0f0');
-        _origRenderRadar2(stock);
-        // Check canvas
-        setTimeout(function(){
-          var cvs = dom.querySelector('canvas');
-          log('  canvas: ' + (cvs?'found '+cvs.width+'x'+cvs.height:'MISSING'), cvs?'#0f0':'#f00');
-          if (cvs && (cvs.width===0 || cvs.height===0)) log('  CANVAS ZERO SIZE!', '#f00');
-        }, 100);
-        log('  setOption done', '#0f0');
-      } catch(e) {
-        log('  CRASH: ' + e.message + ' @ ' + e.stack?.split('\\n')[0], '#f00');
-      }
+        var cvs = dom && dom.querySelector('canvas');
+        log('  canvas=' + (cvs?cvs.width+'x'+cvs.height:'NO') + ' dom=' + (dom?dom.offsetWidth+'x'+dom.offsetHeight:'NO'), cvs?'#0f0':'#f00');
+      } catch(e) { log('  RADAR CRASH: '+e.message, '#f00'); }
     };
+
+    var _h = window.renderHistory;
+    window.renderHistory = function(hist) {
+      try {
+        log('▶ HISTORY: ' + (hist?'yes':'null'), '#ff0');
+        if (!hist) { log('  NO HIST DATA', '#f00'); return; }
+        log('  records=' + (hist.history?hist.history.length:0), '#0f0');
+        _h(hist);
+        var dom = document.getElementById('historyChart');
+        var cvs = dom && dom.querySelector('canvas');
+        log('  canvas=' + (cvs?cvs.width+'x'+cvs.height:'NO'), cvs?'#0f0':'#f00');
+      } catch(e) { log('  HISTORY CRASH: '+e.message, '#f00'); }
+    };
+
+    var _k = window.renderKline;
+    window.renderKline = function(hist) {
+      try {
+        log('▶ KLINE: ' + (hist?'yes':'null'), '#ff0');
+        if (!hist) { log('  NO HIST DATA', '#f00'); return; }
+        log('  kline=' + (hist.kline?hist.kline.length:0) + ' history=' + (hist.history?hist.history.length:0), '#0f0');
+        _k(hist);
+        var dom = document.getElementById('klineChart');
+        var cvs = dom && dom.querySelector('canvas');
+        log('  canvas=' + (cvs?cvs.width+'x'+cvs.height:'NO'), cvs?'#0f0':'#f00');
+      } catch(e) { log('  KLINE CRASH: '+e.message, '#f00'); }
+    };
+
+    log('All 3 chart fns patched', '#0f0');
   }
+  setTimeout(patchAll, 200);
 })();
 </script>
 </body>
