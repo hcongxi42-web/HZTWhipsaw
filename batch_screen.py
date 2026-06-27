@@ -498,20 +498,21 @@ class StockScorer:
         r2 = r_value ** 2
         annual_slope = slope * 250 * 100  # 年化%
 
-        # Bell: 趋势类更宽更高, 震荡类保持原参数
+        # 斜率评分: 趋势类用sigmoid(奖励涨得快), 震荡类用Bell(奖励适中)
         if trend_class == 'trend':
-            slope_score = self._bell(annual_slope, 40, 30)
+            # sigmoid: 年化25%→50分, 50%→88分, 75%+→98分
+            # 不惩罚陡峭斜率 — 趋势越强分越高
+            slope_score = self._sigmoid(annual_slope, 25.0, 0.08)
         else:
             slope_score = self._bell(annual_slope, 25, 18)
 
-        # 斜率折扣 (两类共用, 但趋势类阈值更宽松)
+        # 斜率折扣
         if trend_class == 'trend':
-            if annual_slope > 120:
-                slope_score *= 0.5
+            # 趋势类: 仅惩罚极弱斜率, 不惩罚强势
+            if annual_slope < 0:
+                slope_score *= 0.1   # 负斜率 → 几乎清零
             elif annual_slope < 10:
-                slope_score *= 0.30
-            elif annual_slope < 25:
-                slope_score *= 0.70
+                slope_score *= 0.40  # <10% 温和打折
         else:
             if annual_slope > 80:
                 slope_score *= 0.5
@@ -777,8 +778,8 @@ class StockScorer:
         else:
             return 50   # 中性
 
-    def _compute_trend_total(self, ss):
-        """趋势引擎：6维度 + 趋势门控。
+    def _compute_trend_total(self, ss, class_score=100):
+        """趋势引擎：6维度 + 趋势门控 + MA5健康度校验。
         答'这波趋势值得追吗' — 奖励趋势强度+回调健康+资金持续"""
         import math
         wo = self.score_washout_quality(strength_score=ss)
@@ -789,14 +790,35 @@ class StockScorer:
         ff = self.score_fund_flow()
         vh = self.score_volume_health()
 
-        # 趋势股权重: 强度为王, 均线发散是正常的所以权重最低
-        raw = ss*0.35 + wo*0.20 + vph*0.20 + pt*0.10 + lr*0.10 + mc*0.05
+        # 趋势股权重: 强度+回调质量为核心, 试盘信号降权(趋势不靠试盘)
+        raw = ss*0.35 + wo*0.25 + vph*0.20 + lr*0.10 + pt*0.05 + mc*0.05
 
-        # 趋势门控: 强度中心降到30 (趋势股强度天然更高)
-        # 趋势引擎不用trend_consistency: 趋势股持续上涨是优点, 不是'缺回调'
+        # 趋势门控: 强度中心降到30
         gate = 1.0 / (1.0 + math.exp(-0.15 * (ss - 30)))
 
-        total = raw * gate
+        # MA5 健康度校验: 短期动量方向影响gate
+        n_total = len(self.df)
+        strength_end = n_total - 15
+        if strength_end >= 10:
+            s_closes = self.df.iloc[:strength_end]['close'].values
+            ma5_slope = self._ma_slope(s_closes, 5)
+            if ma5_slope > 0:
+                # MA5向上: 趋势健康, gate加成
+                ma5_health = 1.0 + min(0.15, ma5_slope / 500.0)
+            else:
+                # MA5向下: 趋势在瓦解, gate打折
+                ma5_health = max(0.5, 1.0 + ma5_slope / 200.0)
+        else:
+            ma5_health = 1.0
+
+        # 背离折扣: 分类分<75 且 MA5<0 → 趋势质量存疑, gate额外打折
+        if class_score < 75 and strength_end >= 10:
+            s_closes = self.df.iloc[:strength_end]['close'].values
+            ma5_s = self._ma_slope(s_closes, 5)
+            if ma5_s < 0:
+                gate *= 0.7  # 分类信心不足 + 短期向下 = 趋势可能破裂
+
+        total = raw * gate * ma5_health
         return total, {'stock_strength': ss, 'washout_quality': wo, 'probe_test': pt,
                        'ma_convergence': mc, 'launch_readiness': lr,
                        'volume_price_health': vph, 'fund_flow': ff, 'volume_health': vh}
@@ -854,13 +876,13 @@ class StockScorer:
 
         # 3. 路由到引擎
         if class_score >= 60:
-            total, dims = self._compute_trend_total(stock_strength)
+            total, dims = self._compute_trend_total(stock_strength, class_score)
         elif class_score <= 50:
             total, dims = self._compute_choppy_total(stock_strength)
         else:
             # 过渡区: 两个引擎各算一次, 按 class_score 混合
             t_total, t_dims = self._compute_trend_total(
-                self.score_stock_strength(force_class='trend'))
+                self.score_stock_strength(force_class='trend'), class_score)
             c_total, c_dims = self._compute_choppy_total(
                 self.score_stock_strength(force_class='choppy'))
             blend = class_score / 100.0
