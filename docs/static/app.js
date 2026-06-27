@@ -5,9 +5,10 @@
 
 let currentPage = 1, currentSort = 'total', currentOrder = 'desc';
 let currentDate = null;
-let allStocks = [];           // currently loaded date's stocks (filtered)
+let currentClass = 'all';        // 'all' | 'trend' | 'choppy'
+let allStocks = [];              // currently loaded date's stocks (filtered)
 let radarChart = null, historyChart = null, klineChart = null;
-let dateStats = {};           // summary stats per date
+let dateStats = {};              // summary stats per date
 
 const PER_PAGE = 50;
 
@@ -68,6 +69,18 @@ async function init() {
   await loadDates();
   await loadIndustries();
   await loadStorage();
+  // Class toggle buttons
+  document.querySelectorAll('.class-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      document.querySelectorAll('.class-btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      currentClass = this.dataset.class;
+      currentPage = 1;
+      renderTable();
+      // Update header stats
+      if (allStocks.length > 0) updateStats({ date: currentDate, total: allStocks.length });
+    });
+  });
   await loadData();
 }
 init();
@@ -153,15 +166,22 @@ async function loadData() {
 // ── Header stats ──
 function updateStats(d) {
   document.getElementById('statDate').textContent = d.date || currentDate;
-  document.getElementById('statTotal').textContent = d.total || 0;
-  const totals = allStocks.map(s => s.total);
+  const ds = dateStats[currentDate];
+  // Use filtered stocks for stats
+  const filtered = currentClass === 'all' ? allStocks : allStocks.filter(s => s.trend_class === currentClass);
+  document.getElementById('statTotal').textContent = filtered.length;
+  const totals = filtered.map(s => s.total);
   const avg = totals.length > 0 ? (totals.reduce((a,b) => a+b, 0) / totals.length).toFixed(1) : '--';
   const max = totals.length > 0 ? Math.max(...totals).toFixed(1) : '--';
   document.getElementById('statAvg').textContent = avg;
   document.getElementById('statMax').textContent = max;
-  document.getElementById('statLimit').textContent = allStocks.filter(s => s.is_limit_up_today).length;
+  document.getElementById('statLimit').textContent = filtered.filter(s => s.is_limit_up_today).length;
+  // 趋势/震荡计数
+  const trendCnt = allStocks.filter(s => s.trend_class === 'trend').length;
+  const choppyCnt = allStocks.filter(s => s.trend_class !== 'trend').length;
+  document.getElementById('trendCnt').textContent = trendCnt;
+  document.getElementById('choppyCnt').textContent = choppyCnt;
   // 数据质量
-  const ds = dateStats[currentDate];
   const qlabel = { full: '完整', partial: '部分', sparse: '稀疏', unknown: '未知' };
   document.getElementById('statQuality').textContent = ds ? (qlabel[ds.quality] || '?') : '?';
   document.getElementById('statRaw').textContent = ds ? (ds.stock_count || ds.cnt || '?') : '?';
@@ -170,6 +190,11 @@ function updateStats(d) {
 // ── Filter and sort ──
 function getFiltered() {
   let stocks = [...allStocks];
+
+  // Class filter (趋势/震荡)
+  if (currentClass !== 'all') {
+    stocks = stocks.filter(s => s.trend_class === currentClass);
+  }
 
   // Search
   const search = document.getElementById('searchInput').value.trim().toLowerCase();
@@ -231,6 +256,7 @@ function renderTable() {
       <td class="col-rank">${start + i + 1}</td>
       <td class="col-code">${s.code}</td>
       <td class="col-name">${s.name}</td>
+      <td class="col-class"><span class="class-tag ${s.trend_class || 'choppy'}">${s.trend_class === 'trend' ? '趋势' : '震荡'}</span></td>
       <td class="col-score ${scoreClass(s.total)}">${s.total.toFixed(1)}</td>
       <td class="col-dim ${scoreClass(s.stock_strength||0)}">${(s.stock_strength||0).toFixed(0)}</td>
       <td class="col-dim ${scoreClass(s.washout_quality)}">${s.washout_quality}</td>
@@ -315,7 +341,7 @@ function renderDetail(stock, hist) {
   panel.innerHTML = `
     <div class="detail-header">
       <div>
-        <div class="name">${stock.name}</div>
+        <div class="name">${stock.name} <span class="class-tag ${stock.trend_class || 'choppy'}">${stock.trend_class === 'trend' ? '趋势' : '震荡'}</span></div>
         <div class="code">${stock.code}</div>
       </div>
       <div class="total-score ${scoreClass(stock.total)}">${stock.total.toFixed(1)}</div>

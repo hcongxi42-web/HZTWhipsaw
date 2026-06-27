@@ -72,7 +72,9 @@ def main():
     print('获取日期列表...')
     dates_df = pd.read_sql_query("""
         SELECT target_date, COUNT(*) as cnt, ROUND(AVG(total),1) as avg_score,
-               ROUND(MAX(total),1) as max_score, SUM(is_limit_up_today) as limit_count
+               ROUND(MAX(total),1) as max_score, SUM(is_limit_up_today) as limit_count,
+               SUM(CASE WHEN trend_class='trend' THEN 1 ELSE 0 END) as trend_cnt,
+               SUM(CASE WHEN trend_class='choppy' OR trend_class IS NULL THEN 1 ELSE 0 END) as choppy_cnt
         FROM screening_history
         GROUP BY target_date HAVING cnt >= 20
         ORDER BY target_date DESC
@@ -124,7 +126,8 @@ def main():
             SELECT code, rank, total, washout_quality, probe_test, ma_convergence,
                    stock_strength, launch_readiness, volume_price_health,
                    latest_close, latest_pctChg, is_limit_up_today,
-                   recent_limit_days, probe_count, days_since_probe
+                   recent_limit_days, probe_count, days_since_probe,
+                   trend_class
             FROM screening_history
             WHERE target_date = ?
             ORDER BY rank
@@ -153,6 +156,7 @@ def main():
                 'probe_count': int(row['probe_count']),
                 'days_since_probe': int(row['days_since_probe']),
                 'industry': industry,
+                'trend_class': row.get('trend_class') or 'choppy',
             })
 
         with open(os.path.join(DATA_DIR, f'{date}.json'), 'w', encoding='utf-8') as f:

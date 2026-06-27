@@ -647,6 +647,39 @@ class StockScorer:
 
         return max(0, min(100, excess_score * 0.55 + wr_score * 0.45))
 
+    def _classify_trend(self, strength):
+        """趋势/震荡分类器。
+        基于 Efficiency Ratio + Peak-End DD% + R² 三指标合成分类分数。
+        >= 55 → 'trend', < 55 → 'choppy'
+        返回: (class_label, score) — class_label ∈ {'trend', 'choppy'}"""
+        closes = strength['close'].values
+        n = len(closes)
+        if n < 10:
+            return ('choppy', 0)
+
+        # 1) Efficiency Ratio: 净位移 / 路径总长 (0~1, 越高越直)
+        path_len = np.sum(np.abs(np.diff(closes)))
+        net_len = abs(closes[-1] - closes[0])
+        er = net_len / path_len if path_len > 0 else 0
+        er_score = self._sigmoid(er, 0.12, 30.0)
+
+        # 2) Peak-End DD%: 终点离最高点多远 (越小越干净)
+        peak_dd = 1.0 - closes[-1] / closes.max() if closes.max() > 0 else 0
+        dd_score = 100.0 - self._sigmoid(peak_dd, 0.15, 20.0)
+
+        # 3) R²: 趋势可靠性
+        x = np.arange(n)
+        log_y = np.log(np.maximum(closes, 0.01))
+        _, _, r_value, _, _ = stats.linregress(x, log_y)
+        r_value = np.nan_to_num(r_value, nan=0.0)
+        r2 = r_value ** 2
+        r2_score = max(0, min(100, r2 * 100))
+
+        # 4) 合成分类分数
+        score = er_score * 0.40 + dd_score * 0.40 + r2_score * 0.20
+        trend_class = 'trend' if score >= 55 else 'choppy'
+        return (trend_class, round(score, 1))
+
     def trend_consistency(self):
         """P2：前期趋势 vs 近期调整的方向一致性校验
         - 前期涨 + 近期回调 → 健康洗盘 (高分)
@@ -691,9 +724,18 @@ class StockScorer:
                 'stock_strength': 0, 'washout_quality': 0, 'probe_test': 0,
                 'ma_convergence': 0, 'launch_readiness': 0,
                 'volume_price_health': 0, 'fund_flow': 0, 'volume_health': 0,
-                'total': 0,
+                'total': 0, 'trend_class': 'choppy',
             }
             return self.scores
+
+        # 2.5 ★ 趋势/震荡分类 (新增)
+        n_total = len(self.df)
+        strength_end = n_total - 15
+        if strength_end >= 10:
+            strength = self.df.iloc[:strength_end]
+            trend_class, trend_class_score = self._classify_trend(strength)
+        else:
+            trend_class, trend_class_score = 'choppy', 0
 
         # 3. 洗盘质量：传入强度做前置门控（<20 → 直接 return 0）
         washout_quality = self.score_washout_quality(strength_score=stock_strength)
@@ -738,6 +780,8 @@ class StockScorer:
             'fund_flow': fund_flow,
             'volume_health': volume_health,
             'total': round(total, 1),
+            'trend_class': trend_class,
+            'trend_class_score': trend_class_score,
         }
         return self.scores
 
@@ -926,11 +970,13 @@ def main():
          avg_amplitude REAL, max_dd_pct REAL, is_limit_up_today INTEGER,
          recent_limit_days INTEGER, probe_count INTEGER, days_since_probe INTEGER,
          up_days INTEGER, down_days INTEGER, avg_vol_ratio REAL, retreat_shrink REAL,
+         trend_class TEXT, trend_class_score REAL,
          PRIMARY KEY (target_date, code))''')
     # 迁移：为已有表添加新列
-    for col in ['stock_strength', 'volume_price_health']:
+    for col, col_type in [('stock_strength', 'REAL'), ('volume_price_health', 'REAL'),
+                           ('trend_class', 'TEXT'), ('trend_class_score', 'REAL')]:
         try:
-            conn.execute(f"ALTER TABLE screening_history ADD COLUMN {col} REAL")
+            conn.execute(f"ALTER TABLE screening_history ADD COLUMN {col} {col_type}")
             print(f"  ✓ 已新增 {col} 列")
         except sqlite3.OperationalError:
             pass  # 列已存在

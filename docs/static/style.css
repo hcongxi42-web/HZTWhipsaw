@@ -43,11 +43,12 @@ body {
 header {
   background: var(--bg);
   border-bottom: 0.5px solid var(--border);
-  padding: 14px 28px;
+  padding: 10px 28px;
   display: flex;
-  align-items: baseline;
-  gap: 40px;
+  align-items: center;
+  gap: 24px;
   flex-shrink: 0;
+  flex-wrap: wrap;
 }
 header h1 {
   font-size: 16px;
@@ -405,3 +406,47 @@ header h1 .subtitle {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #D0CDC5; }
 ::-webkit-scrollbar-thumb:hover { background: #B0ACA7; }
+
+/* ── Trend/Choppy Segmented Control ── */
+.class-toggle {
+  display: flex;
+  gap: 0;
+}
+.class-btn {
+  padding: 4px 14px;
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font-serif);
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.class-btn:first-child { border-radius: 3px 0 0 3px; }
+.class-btn:last-child  { border-radius: 0 3px 3px 0; }
+.class-btn + .class-btn { margin-left: -0.5px; }
+.class-btn:hover { border-color: var(--navy); color: var(--navy); }
+.class-btn.active {
+  background: var(--navy);
+  color: #FFF;
+  border-color: var(--navy);
+  font-weight: 600;
+}
+.class-cnt {
+  font-size: 9px;
+  opacity: 0.7;
+  margin-left: 2px;
+}
+
+/* ── Class Tag ── */
+.col-class { width: 42px; font-size: 10px; }
+.class-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.class-tag.trend  { color: var(--green); }
+.class-tag.choppy { color: var(--warm-dark); }

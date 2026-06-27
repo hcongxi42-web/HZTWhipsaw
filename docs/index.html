@@ -11,6 +11,11 @@
 
 <header>
   <h1>HZTwhipsaw <span class="subtitle">量价洗盘评分系统</span></h1>
+  <div class="class-toggle" id="classToggle">
+    <button class="class-btn active" data-class="all">全部</button>
+    <button class="class-btn" data-class="trend">趋势 <span class="class-cnt" id="trendCnt">--</span></button>
+    <button class="class-btn" data-class="choppy">震荡 <span class="class-cnt" id="choppyCnt">--</span></button>
+  </div>
   <div class="header-stats" id="headerStats">
     <span class="stat-item">目标日期 <strong id="statDate">--</strong></span>
     <span class="stat-item">候选池 <strong id="statTotal">--</strong></span>
@@ -124,6 +129,7 @@
             <th class="col-rank">#</th>
             <th class="col-code">代码</th>
             <th class="col-name">名称</th>
+            <th class="col-class">类别</th>
             <th class="col-score sortable active" data-sort="total">总分</th>
             <th class="col-dim sortable" data-sort="stock_strength">强度</th>
             <th class="col-dim sortable" data-sort="washout_quality">洗盘</th>
