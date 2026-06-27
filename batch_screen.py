@@ -367,6 +367,7 @@ class StockScorer:
 
         # OBV趋势 (30%): 连续 — 归一化斜率
         obv_slope, _, r_value, _, _ = stats.linregress(np.arange(len(d)), d['obv'].values)
+        r_value = np.nan_to_num(r_value, nan=0.0)  # NaN guard: 常数列→无相关性
         r2 = r_value ** 2
         obv_mean = abs(d['obv'].mean())
         if obv_mean > 0:
@@ -419,8 +420,8 @@ class StockScorer:
 
     def score_volume_price_health(self):
         """量价健康：资金流向 + 量价健康 等权合并"""
-        ff = self.score_fund_flow()
-        vh = self.score_volume_health()
+        ff = np.nan_to_num(self.score_fund_flow(), nan=50.0)
+        vh = np.nan_to_num(self.score_volume_health(), nan=50.0)
         return (ff + vh) / 2.0
 
     # ── 股票强度 (Stock Strength) ──
@@ -445,6 +446,7 @@ class StockScorer:
         x = np.arange(len(strength))
         log_y = np.log(np.maximum(strength['close'].values, 0.01))
         slope, _, r_value, _, _ = stats.linregress(x, log_y)
+        r_value = np.nan_to_num(r_value, nan=0.0)  # NaN guard
         annual_slope = slope * 250 * 100  # 年化%
 
         # 硬闸1：明显下跌趋势 → 直接出局
@@ -476,10 +478,8 @@ class StockScorer:
         # D. 相对优势 vs 沪深300 (15%)
         relative_score = self._strength_relative(strength)
 
-        return max(0, min(100,
-            trend_score * 0.35 + volume_score * 0.25 +
-            pullback_score * 0.25 + relative_score * 0.15
-        ))
+        raw = trend_score * 0.35 + volume_score * 0.25 + pullback_score * 0.25 + relative_score * 0.15
+        return max(0, min(100, np.nan_to_num(raw, nan=0.0)))
 
     def _strength_trend(self, strength):
         """子因子A：前期趋势强度（对数OLS斜率+R², bell曲线）
@@ -487,6 +487,7 @@ class StockScorer:
         x = np.arange(len(strength))
         log_y = np.log(np.maximum(strength['close'].values, 0.01))
         slope, _, r_value, _, _ = stats.linregress(x, log_y)
+        r_value = np.nan_to_num(r_value, nan=0.0)  # NaN guard
         r2 = r_value ** 2
         annual_slope = slope * 250 * 100  # 年化%
 
@@ -534,6 +535,7 @@ class StockScorer:
         # OBV 趋势: 信息比率化（P2修复：替代 obv_slope/obv_mean 归一化）
         x = np.arange(len(strength))
         obv_slope, _, obv_r_value, _, _ = stats.linregress(x, strength['obv'].values)
+        obv_r_value = np.nan_to_num(obv_r_value, nan=0.0)  # NaN guard
         obv_r2 = obv_r_value ** 2
         obv_diff = strength['obv'].diff().dropna()
         if len(obv_diff) > 1 and obv_diff.std() > 0:

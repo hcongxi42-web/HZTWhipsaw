@@ -151,57 +151,5 @@
 </div>
 
 <script src="static/app.js"></script>
-<script>
-// == DEBUG v4: 捕获 hr.json() 异常 ==
-(function(){
-  var dbg = document.createElement('div');
-  dbg.id = '__debug_log';
-  dbg.style.cssText = 'position:fixed;bottom:0;left:0;right:0;z-index:99999;background:#111;color:#0f0;font:10px monospace;max-height:240px;overflow:auto;padding:5px 8px;border-top:2px solid #f00;';
-  document.body.appendChild(dbg);
-  function log(msg, color) {
-    dbg.innerHTML += '<div style="color:'+(color||'#0f0')+'">[' + new Date().toLocaleTimeString() + '] ' + msg + '</div>';
-    dbg.scrollTop = dbg.scrollHeight;
-  }
-  log('DIAG v4 — JSON parse trap', '#ff0');
-
-  // Monkey-patch Response.prototype.json to catch parse errors
-  var _origJson = Response.prototype.json;
-  Response.prototype.json = function() {
-    var self = this;
-    log('  .json() called, url=' + (self.url||'?') + ' status=' + self.status, '#aaa');
-    return _origJson.call(this).then(function(v) {
-      log('  .json() OK, keys=' + Object.keys(v||{}).join(','), '#0f0');
-      return v;
-    }).catch(function(e) {
-      log('  .json() PARSE ERROR: ' + e.message, '#f00');
-      throw e;
-    });
-  };
-
-  // Patch renderHistory + renderKline
-  var _patchTimer = setInterval(function(){
-    if (!window.renderHistory || !window.renderKline) return;
-    clearInterval(_patchTimer);
-
-    var _h = window.renderHistory;
-    window.renderHistory = function(hist) {
-      log('renderHistory: hist=' + (hist?'obj':'NULL'), hist?'#0f0':'#f00');
-      if (!hist) return;
-      log('  history='+(hist.history?hist.history.length:0)+' kline='+(hist.kline?hist.kline.length:0), '#0f0');
-      _h(hist);
-    };
-
-    var _k = window.renderKline;
-    window.renderKline = function(hist) {
-      log('renderKline: hist=' + (hist?'obj':'NULL'), hist?'#0f0':'#f00');
-      if (!hist) return;
-      log('  kline='+(hist.kline?hist.kline.length:0), '#0f0');
-      _k(hist);
-    };
-
-    log('Patched renderHistory + renderKline', '#0f0');
-  }, 100);
-})();
-</script>
 </body>
 </html>
