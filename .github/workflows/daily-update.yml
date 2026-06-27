@@ -77,6 +77,9 @@ jobs:
             python batch_screen.py --latest
           fi
 
+      - name: Re-score dates with NaN values (one-time fix)
+        run: python batch_screen.py --rescore-nan
+
       - name: Slim database (drop unused tables + keep 90 days)
         run: python slim_db.py
 

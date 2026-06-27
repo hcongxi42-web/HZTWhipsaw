@@ -867,9 +867,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--latest', action='store_true', help='Only process dates not yet in screening_history')
     parser.add_argument('--date', type=str, help='Process a specific date')
+    parser.add_argument('--rescore', type=str, help='Re-score specific dates (comma-separated, deletes old rows first)')
+    parser.add_argument('--rescore-nan', action='store_true', help='Re-score dates that have NaN in stock_strength or volume_price_health')
     args = parser.parse_args()
 
-    if args.date:
+    # ── 确定待处理日期 ──
+    if args.rescore:
+        dates = [d.strip() for d in args.rescore.split(',') if d.strip()]
+        rescue_mode = True
+    elif args.rescore_nan:
+        rescue_mode = True
+    elif args.date:
         dates = [args.date]
     elif args.latest:
         dates = get_missing_dates()
@@ -885,7 +893,28 @@ def main():
             '2026-06-22', '2026-06-23'
         ]
 
+    # ── 连接 DB ──
     conn = sqlite3.connect(DB_PATH)
+
+    # ── 重评模式：先清理含 NaN 的旧评分 ──
+    if args.rescore_nan:
+        cur = conn.execute('''
+            SELECT DISTINCT target_date FROM screening_history
+            WHERE stock_strength IS NULL OR stock_strength != stock_strength
+               OR volume_price_health IS NULL OR volume_price_health != volume_price_health
+            ORDER BY target_date
+        ''')
+        dates = [row[0] for row in cur]
+        if not dates:
+            print('没有发现含 NaN 的评分记录')
+            conn.close()
+            return
+        print(f'发现 {len(dates)} 个含 NaN 的日期: {dates}')
+    if args.rescore or args.rescore_nan:
+        for d in dates:
+            conn.execute("DELETE FROM screening_history WHERE target_date = ?", (d,))
+        conn.commit()
+        print(f'已清理 {len(dates)} 个日期的旧评分，准备重评')
 
     # 建表 (不存在才建)
     conn.execute('''CREATE TABLE IF NOT EXISTS screening_history
