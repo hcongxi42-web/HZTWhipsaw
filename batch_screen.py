@@ -425,9 +425,9 @@ class StockScorer:
         return (ff + vh) / 2.0
 
     # ── 股票强度 (Stock Strength) ──
-    def score_stock_strength(self):
-        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势（含趋势熔断）
-        P1收紧：下跌趋势 return 0，微跌 return 0~5，trend<15 直接短路"""
+    def score_stock_strength(self, force_class=None):
+        """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势
+        force_class: 若提供则跳过分类器, 强制使用 'trend'/'choppy' 参数集"""
         d = self.df
         n = len(d)
 
@@ -463,7 +463,10 @@ class StockScorer:
             return 5
 
         # ★ 趋势/震荡分类 (在子函数调用前, 使各因子感知类别)
-        trend_class, _ = self._classify_trend(strength)
+        if force_class is not None:
+            trend_class = force_class
+        else:
+            trend_class, _ = self._classify_trend(strength)
 
         # A. 前期趋势强度 (35%) — 传类别
         trend_score = self._strength_trend(strength, trend_class)
@@ -774,78 +777,104 @@ class StockScorer:
         else:
             return 50   # 中性
 
+    def _compute_trend_total(self, ss):
+        """趋势引擎：6维度 + 趋势门控。
+        答'这波趋势值得追吗' — 奖励趋势强度+回调健康+资金持续"""
+        import math
+        wo = self.score_washout_quality(strength_score=ss)
+        pt = self.score_probe_test()
+        mc = self.score_ma_convergence()
+        lr = self.score_launch_readiness()
+        vph = self.score_volume_price_health()
+        ff = self.score_fund_flow()
+        vh = self.score_volume_health()
+
+        # 趋势股权重: 强度为王, 均线发散是正常的所以权重最低
+        raw = ss*0.35 + wo*0.20 + vph*0.20 + pt*0.10 + lr*0.10 + mc*0.05
+
+        # 趋势门控: 强度中心降到30 (趋势股强度天然更高)
+        # 趋势引擎不用trend_consistency: 趋势股持续上涨是优点, 不是'缺回调'
+        gate = 1.0 / (1.0 + math.exp(-0.15 * (ss - 30)))
+
+        total = raw * gate
+        return total, {'stock_strength': ss, 'washout_quality': wo, 'probe_test': pt,
+                       'ma_convergence': mc, 'launch_readiness': lr,
+                       'volume_price_health': vph, 'fund_flow': ff, 'volume_health': vh}
+
+    def _compute_choppy_total(self, ss):
+        """震荡引擎：6维度 + 潜伏门控。
+        答'这个横盘值得潜伏吗' — 奖励均线收敛+试盘+缩量, 弱化强度"""
+        import math
+        wo = self.score_washout_quality(strength_score=ss)
+        pt = self.score_probe_test()
+        mc = self.score_ma_convergence()
+        lr = self.score_launch_readiness()
+        vph = self.score_volume_price_health()
+        ff = self.score_fund_flow()
+        vh = self.score_volume_health()
+
+        # 震荡股权重: 收敛+试盘是核心, 强度降到最低(没趋势是正常的)
+        raw = mc*0.25 + pt*0.22 + wo*0.22 + vph*0.13 + lr*0.13 + ss*0.05
+
+        # 震荡门控: 用均线粘合度×试盘信号 代替 strength gate
+        # 两者都低 → '没收敛也没人试, 凭什么突破' → gate压制
+        mc_gate = 1.0 / (1.0 + math.exp(-0.1 * (mc - 40)))
+        pt_gate = 1.0 / (1.0 + math.exp(-0.1 * (pt - 30)))
+        gate = mc_gate * 0.55 + pt_gate * 0.45
+
+        # 震荡股不适用趋势一致性 (本来就没趋势)
+        total = raw * gate
+        return total, {'stock_strength': ss, 'washout_quality': wo, 'probe_test': pt,
+                       'ma_convergence': mc, 'launch_readiness': lr,
+                       'volume_price_health': vph, 'fund_flow': ff, 'volume_health': vh}
+
     def compute_total_score(self):
-        """总分合成：Sigmoid门控乘法。
-        P0核心重构：股票强度不是"30%的维度"，而是"100%的电源开关"。
-        强度不足时，门控系数急剧衰减，其他维度被整体压制。"""
+        """总分合成 v3：趋势/震荡双引擎。
+        分类器定类 → 趋势引擎/震荡引擎 → 过渡区混合."""
 
-        # 1. 先算股票强度（电源开关，必须最先）
-        stock_strength = self.score_stock_strength()
+        # 1. 分类 (先于评分, 引擎需要知道类别)
+        n_total = len(self.df)
+        strength_end = n_total - 15
+        if strength_end >= 10:
+            strength = self.df.iloc[:strength_end]
+            trend_class, class_score = self._classify_trend(strength)
+        else:
+            trend_class, class_score = 'choppy', 0
 
-        # 2. 强度为0 → 直接出局，不浪费算力
+        # 2. 股票强度 (先算, 强度=0直接出局, 两个引擎都用)
+        stock_strength = self.score_stock_strength(force_class=trend_class)
         if stock_strength == 0:
             self.scores = {
                 'stock_strength': 0, 'washout_quality': 0, 'probe_test': 0,
                 'ma_convergence': 0, 'launch_readiness': 0,
                 'volume_price_health': 0, 'fund_flow': 0, 'volume_health': 0,
-                'total': 0, 'trend_class': 'choppy',
+                'total': 0, 'trend_class': 'choppy', 'trend_class_score': class_score,
             }
             return self.scores
 
-        # 2.5 ★ 趋势/震荡分类 (新增)
-        n_total = len(self.df)
-        strength_end = n_total - 15
-        if strength_end >= 10:
-            strength = self.df.iloc[:strength_end]
-            trend_class, trend_class_score = self._classify_trend(strength)
+        # 3. 路由到引擎
+        if class_score >= 60:
+            total, dims = self._compute_trend_total(stock_strength)
+        elif class_score <= 50:
+            total, dims = self._compute_choppy_total(stock_strength)
         else:
-            trend_class, trend_class_score = 'choppy', 0
-
-        # 3. 洗盘质量：传入强度做前置门控（<20 → 直接 return 0）
-        washout_quality = self.score_washout_quality(strength_score=stock_strength)
-
-        # 4. 其余维度
-        probe_test = self.score_probe_test()
-        ma_convergence = self.score_ma_convergence()
-        launch_readiness = self.score_launch_readiness()
-        volume_price_health = self.score_volume_price_health()
-        fund_flow = self.score_fund_flow()
-        volume_health = self.score_volume_health()
-
-        # 5. 原始线性加权分
-        weights = {
-            'stock_strength': 0.30, 'washout_quality': 0.15,
-            'probe_test': 0.15, 'ma_convergence': 0.20,
-            'launch_readiness': 0.10, 'volume_price_health': 0.10,
-        }
-        raw = (stock_strength * 0.30 + washout_quality * 0.15 +
-               probe_test * 0.15 + ma_convergence * 0.20 +
-               launch_readiness * 0.10 + volume_price_health * 0.10)
-
-        # 6. === P0 核心：Sigmoid 门控 ===
-        # gate 在 strength=35 时≈0.5, strength=50 时≈0.90, strength=80 时≈0.999
-        import math
-        gate = 1.0 / (1.0 + math.exp(-0.15 * (stock_strength - 35)))
-
-        # 7. === P2：趋势一致性因子 ===
-        consistency = self.trend_consistency() / 100.0  # 0.0 ~ 1.0
-        consistency_mult = 0.5 + 0.5 * consistency       # 0.5 ~ 1.0
-
-        # 8. 最终总分 = raw × gate × consistency_multiplier
-        total = raw * gate * consistency_mult
+            # 过渡区: 两个引擎各算一次, 按 class_score 混合
+            t_total, t_dims = self._compute_trend_total(
+                self.score_stock_strength(force_class='trend'))
+            c_total, c_dims = self._compute_choppy_total(
+                self.score_stock_strength(force_class='choppy'))
+            blend = class_score / 100.0
+            total = t_total * blend + c_total * (1 - blend)
+            dims = {}
+            for k in t_dims:
+                dims[k] = round(t_dims[k] * blend + c_dims.get(k, 0) * (1 - blend), 1)
+            dims['stock_strength'] = stock_strength  # 保留原分类的强度
 
         self.scores = {
-            'stock_strength': stock_strength,
-            'washout_quality': washout_quality,
-            'probe_test': probe_test,
-            'ma_convergence': ma_convergence,
-            'launch_readiness': launch_readiness,
-            'volume_price_health': volume_price_health,
-            'fund_flow': fund_flow,
-            'volume_health': volume_health,
+            **dims,
             'total': round(total, 1),
             'trend_class': trend_class,
-            'trend_class_score': trend_class_score,
+            'trend_class_score': class_score,
         }
         return self.scores
 
