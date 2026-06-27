@@ -1126,6 +1126,12 @@ def main():
     # ── 连接 DB ──
     conn = sqlite3.connect(DB_PATH)
 
+    # ── 单日期模式：删除旧评分避免主键冲突 ──
+    if args.date and not args.rescore and not args.rescore_nan:
+        conn.execute("DELETE FROM screening_history WHERE target_date = ?", (args.date,))
+        conn.commit()
+        print(f'已清理 {args.date} 的旧评分, 准备重评')
+
     # ── 重评模式：先清理含 NaN 的旧评分 ──
     if args.rescore_nan:
         cur = conn.execute('''
