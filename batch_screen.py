@@ -462,8 +462,11 @@ class StockScorer:
         if annual_slope < 3 and r2 < 0.30:
             return 5
 
-        # A. 前期趋势强度 (35%)
-        trend_score = self._strength_trend(strength)
+        # ★ 趋势/震荡分类 (在子函数调用前, 使各因子感知类别)
+        trend_class, _ = self._classify_trend(strength)
+
+        # A. 前期趋势强度 (35%) — 传类别
+        trend_score = self._strength_trend(strength, trend_class)
 
         # 短路：趋势子因子极低 → 不给其他三个因子救场机会
         if trend_score < 15:
@@ -472,8 +475,8 @@ class StockScorer:
         # B. 量能积累确认 (25%)
         volume_score = self._strength_volume(strength)
 
-        # C. 回调有序性 (25%)
-        pullback_score = self._strength_pullback(strength, washout)
+        # C. 回调有序性 (25%) — 传类别: 趋势类奖励浅回调, 震荡类奖励适度回调
+        pullback_score = self._strength_pullback(strength, washout, trend_class)
 
         # D. 相对优势 vs 沪深300 (15%)
         relative_score = self._strength_relative(strength)
@@ -481,9 +484,10 @@ class StockScorer:
         raw = trend_score * 0.35 + volume_score * 0.25 + pullback_score * 0.25 + relative_score * 0.15
         return max(0, min(100, np.nan_to_num(raw, nan=0.0)))
 
-    def _strength_trend(self, strength):
+    def _strength_trend(self, strength, trend_class='choppy'):
         """子因子A：前期趋势强度（对数OLS斜率+R², bell曲线）
-        注意：负斜率已在主函数 score_stock_strength 硬闸拦截，此处只处理正斜率精细评分"""
+        趋势类: Bell(optimal=35%, sigma=30) 奖励强势斜率
+        震荡类: Bell(optimal=25%, sigma=18) 原逻辑"""
         x = np.arange(len(strength))
         log_y = np.log(np.maximum(strength['close'].values, 0.01))
         slope, _, r_value, _, _ = stats.linregress(x, log_y)
@@ -491,15 +495,27 @@ class StockScorer:
         r2 = r_value ** 2
         annual_slope = slope * 250 * 100  # 年化%
 
-        # Bell: 最优年化斜率25%, sigma=18%
-        slope_score = self._bell(annual_slope, 25, 18)
+        # Bell: 趋势类更宽更高, 震荡类保持原参数
+        if trend_class == 'trend':
+            slope_score = self._bell(annual_slope, 40, 30)
+        else:
+            slope_score = self._bell(annual_slope, 25, 18)
 
-        if annual_slope > 80:
-            slope_score *= 0.5
-        elif annual_slope < 5:    # 0~5% 正斜率，仍然偏弱
-            slope_score *= 0.25
-        elif annual_slope < 15:   # 5~15% 温和上涨适当打折
-            slope_score *= 0.70
+        # 斜率折扣 (两类共用, 但趋势类阈值更宽松)
+        if trend_class == 'trend':
+            if annual_slope > 120:
+                slope_score *= 0.5
+            elif annual_slope < 10:
+                slope_score *= 0.30
+            elif annual_slope < 25:
+                slope_score *= 0.70
+        else:
+            if annual_slope > 80:
+                slope_score *= 0.5
+            elif annual_slope < 5:    # 0~5% 正斜率，仍然偏弱
+                slope_score *= 0.25
+            elif annual_slope < 15:   # 5~15% 温和上涨适当打折
+                slope_score *= 0.70
 
         # R²: 高加分, 低不扣 — 线性映射带保底
         if r2 >= 0.70:
@@ -509,10 +525,10 @@ class StockScorer:
         else:
             r2_score = 40 + r2 * 50
 
-        # 趋势斜率很低（<10%），R²再高也不能救太多
+        # 趋势斜率很低（<10%），R²再高也不能救太多 (趋势类不惩罚)
         raw = slope_score * 0.55 + r2_score * 0.45
-        if annual_slope < 10:
-            raw *= 0.6  # 斜率不够，高R²只是"稳定横盘"
+        if trend_class != 'trend' and annual_slope < 10:
+            raw *= 0.6  # 震荡类: 斜率不够，高R²只是"稳定横盘"
 
         return max(0, min(100, raw))
 
@@ -559,13 +575,13 @@ class StockScorer:
             premium_score * 0.40 + (obv_trend * 0.50 + obv_str * 0.50) * 0.40 - div_penalty * 0.20
         ))
 
-    def _strength_pullback(self, strength, washout):
-        """子因子C：回调有序性（深度bell + 缩量sigmoid + 底部收敛）
-        修改三：识别主跌浪——peak在窗口前20%就见顶=不是回调是见顶下跌"""
+    def _strength_pullback(self, strength, washout, trend_class='choppy'):
+        """子因子C：回调有序性（深度bell/sigmoid + 缩量sigmoid + 底部收敛）
+        趋势类: sigmoid奖励浅回调(越浅越高分); 震荡类: bell奖励适度回调(25%最优)"""
         peak_val = strength['close'].max()
         end_val = strength['close'].iloc[-1]
 
-        # === 判断 peak 出现的时间位置（P3: 20%→30%） ===
+        # === 判断 peak 出现的时间位置 ===
         peak_idx_pos = strength['close'].idxmax()
         # peak 在窗口前 30% 就见顶，之后一路跌 → 这不是"回调"，是"见顶下跌"
         if peak_idx_pos < len(strength) * 0.30:
@@ -575,14 +591,21 @@ class StockScorer:
 
         dd = (peak_val - end_val) / peak_val if peak_val > 0 else 0
 
-        # 回调深度 (35%): bell — 最优25%, sigma=12%
-        depth_score = self._bell(dd, 0.25, 0.12)
-        if dd < 0.05:
-            depth_score *= 0.25  # 从0.4→0.25，没回调就是没洗盘
-        elif dd > 0.60:
+        # 回调深度 (35%): 趋势类 vs 震荡类 不同函数
+        if trend_class == 'trend':
+            # 趋势类: sigmoid — 回撤越浅越高分, 奖励顺势持有
+            depth_score = self._sigmoid(dd, 0.10, -30.0)
+            # 无浅回调惩罚 (浅回撤=趋势强, 是好事)
+        else:
+            # 震荡类: bell — 25%回撤最优 (原逻辑)
+            depth_score = self._bell(dd, 0.25, 0.12)
+            if dd < 0.05:
+                depth_score *= 0.25  # 没回调=没洗盘
+        # 极端回撤 (两类共用)
+        if dd > 0.60:
             return 3              # 跌超60%，直接给接近0分
         elif dd > 0.50:
-            depth_score *= 0.1    # 从0.3→0.1，跌太深趋势已坏
+            depth_score *= 0.1    # 跌太深趋势已坏
 
         # 回调阶段缩量 (35%): sigmoid
         peak_idx = strength['close'].idxmax()
@@ -647,27 +670,63 @@ class StockScorer:
 
         return max(0, min(100, excess_score * 0.55 + wr_score * 0.45))
 
+    @staticmethod
+    def _ma_slope(closes, window):
+        """计算收盘价 MA-window 的年化对数OLS斜率 (%)
+        返回: annual_slope (%) 或 0 (数据不足)"""
+        n = len(closes)
+        if n < window + 5:
+            return 0.0
+        ma = np.array([closes[max(0,i-window+1):i+1].mean() for i in range(n)])
+        # 取最后 window 个 MA 值
+        ma_seg = ma[-window:]
+        x = np.arange(len(ma_seg))
+        log_ma = np.log(np.maximum(ma_seg, 0.01))
+        slope, _, _, _, _ = stats.linregress(x, log_ma)
+        return slope * 250 * 100  # 年化%
+
     def _classify_trend(self, strength):
-        """趋势/震荡分类器。
-        基于 Efficiency Ratio + Peak-End DD% + R² 三指标合成分类分数。
-        >= 55 → 'trend', < 55 → 'choppy'
-        返回: (class_label, score) — class_label ∈ {'trend', 'choppy'}"""
+        """趋势/震荡分类器 v2: MA60定方向 + MA5验动量 + Peak-DD + R²
+        - MA60 年化斜率: 中期趋势方向 (权重 35%)
+        - MA5 联动确认:    短期动量是否与中期同向 (权重 15%)
+        - Peak-End DD%:    回撤控制 (权重 25%)
+        - R²:              趋势可靠性 (权重 25%)
+        >= 55 → 'trend', < 55 → 'choppy'"""
         closes = strength['close'].values
         n = len(closes)
-        if n < 10:
-            return ('choppy', 0)
+        if n < 65:
+            # 数据不足60天 → fallback: 用全程 ER (原逻辑)
+            path_len = np.sum(np.abs(np.diff(closes)))
+            net_len = abs(closes[-1] - closes[0])
+            er = net_len / path_len if path_len > 0 else 0
+            er_score = self._sigmoid(er, 0.12, 30.0)
+            ma60_score = er_score
+            ma5_score = 50  # 中性
+        else:
+            # 1) MA60 年化斜率 — 中期趋势方向
+            ma60_slope = self._ma_slope(closes, 60)
+            # 中心 15%: 年化>15%开始视为趋势, <15%视为弱势
+            ma60_score = self._sigmoid(ma60_slope, 15.0, 8.0)
 
-        # 1) Efficiency Ratio: 净位移 / 路径总长 (0~1, 越高越直)
-        path_len = np.sum(np.abs(np.diff(closes)))
-        net_len = abs(closes[-1] - closes[0])
-        er = net_len / path_len if path_len > 0 else 0
-        er_score = self._sigmoid(er, 0.12, 30.0)
+            # 2) MA5 联动确认 — 短期动量校验
+            ma5_slope = self._ma_slope(closes, 5)
+            ma5_divergence = abs(ma5_slope - ma60_slope)  # 背离幅度
+            if np.sign(ma5_slope) == np.sign(ma60_slope) and ma60_slope > 0:
+                # 同向向上: 趋势被短期确认 → 高分
+                ma5_score = self._sigmoid(ma5_slope, 10.0, 10.0)
+            elif ma60_slope > 0 and ma5_slope < 0:
+                # 中期向上但短期向下: 趋势在瓦解 — 按背离幅度惩罚
+                ratio = abs(ma5_slope) / max(abs(ma60_slope), 0.1)
+                ma5_score = max(0, 40 - ratio * 8)
+            else:
+                # 中期向下: 无论短期如何都不算趋势
+                ma5_score = 15
 
-        # 2) Peak-End DD%: 终点离最高点多远 (越小越干净)
+        # 3) Peak-End DD%: 终点离最高点多远 (提前算, 不依赖MA)
         peak_dd = 1.0 - closes[-1] / closes.max() if closes.max() > 0 else 0
         dd_score = 100.0 - self._sigmoid(peak_dd, 0.15, 20.0)
 
-        # 3) R²: 趋势可靠性
+        # 4) R²: 趋势可靠性 (提前算, 后续可能被MA5背离打折)
         x = np.arange(n)
         log_y = np.log(np.maximum(closes, 0.01))
         _, _, r_value, _, _ = stats.linregress(x, log_y)
@@ -675,8 +734,13 @@ class StockScorer:
         r2 = r_value ** 2
         r2_score = max(0, min(100, r2 * 100))
 
-        # 4) 合成分类分数
-        score = er_score * 0.40 + dd_score * 0.40 + r2_score * 0.20
+        if n >= 65:
+            # 严重背离时, 历史R²不再可靠 (趋势已经裂了)
+            if ma60_slope > 0 and ma5_slope < 0 and abs(ma5_slope - ma60_slope) > 80:
+                r2_score *= 0.5
+
+        # 5) 合成分类分数
+        score = ma60_score * 0.35 + ma5_score * 0.15 + dd_score * 0.25 + r2_score * 0.25
         trend_class = 'trend' if score >= 55 else 'choppy'
         return (trend_class, round(score, 1))
 
