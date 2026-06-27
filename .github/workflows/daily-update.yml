@@ -80,6 +80,9 @@ jobs:
       - name: Re-score dates with NaN values (one-time fix)
         run: python batch_screen.py --rescore-nan
 
+      - name: Backfill trend_class for already-scored stocks
+        run: python batch_screen.py --backfill-class
+
       - name: Slim database (drop unused tables + keep 90 days)
         run: python slim_db.py
 

@@ -156,7 +156,7 @@ def main():
                 'probe_count': int(row['probe_count']),
                 'days_since_probe': int(row['days_since_probe']),
                 'industry': industry,
-                'trend_class': row.get('trend_class') or 'choppy',
+                'trend_class': row.get('trend_class') or None,
             })
 
         with open(os.path.join(DATA_DIR, f'{date}.json'), 'w', encoding='utf-8') as f:

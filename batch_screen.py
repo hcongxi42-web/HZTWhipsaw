@@ -878,6 +878,71 @@ def run_for_date(target_date):
     return results_df
 
 
+def backfill_trend_class():
+    """回填已有评分的 trend_class (不重新评分, 仅分类)"""
+    conn = sqlite3.connect(DB_PATH)
+    cur = conn.execute('''
+        SELECT DISTINCT target_date FROM screening_history
+        WHERE trend_class IS NULL
+        ORDER BY target_date
+    ''')
+    dates = [r[0] for r in cur]
+    if not dates:
+        print('所有日期已有 trend_class, 无需回填')
+        conn.close()
+        return
+    print(f'发现 {len(dates)} 个日期需要回填 trend_class: {dates}')
+
+    # 加载沪深300
+    idx_returns = None
+    try:
+        idx_df = pd.read_sql_query(
+            "SELECT date, pctChg FROM index_daily WHERE code='sh.000300' ORDER BY date", conn)
+        if not idx_df.empty:
+            idx_df['idx_ret'] = idx_df['pctChg'].astype(float) / 100.0
+            idx_returns = idx_df.set_index('date')['idx_ret']
+    except Exception:
+        pass
+
+    for date in dates:
+        # Get all stocks for this date that need backfill
+        cur2 = conn.execute('''
+            SELECT code FROM screening_history
+            WHERE target_date = ? AND trend_class IS NULL
+        ''', (date,))
+        codes = [r[0] for r in cur2]
+        print(f'\n{date}: {len(codes)} 只需回填')
+
+        # Get date range
+        trading_dates = get_lookback_dates(date, LOOKBACK_DAYS)
+        start_date = trading_dates[0]
+
+        updated = 0
+        for code in codes:
+            try:
+                df = load_stock_data(code, start_date, date)
+                if df is None or len(df) < 10:
+                    continue
+                scorer = StockScorer(df, index_returns=idx_returns)
+                n = len(scorer.df)
+                se = n - 15
+                if se >= 10:
+                    strength = scorer.df.iloc[:se]
+                    tc, tcs = scorer._classify_trend(strength)
+                    conn.execute(
+                        'UPDATE screening_history SET trend_class=?, trend_class_score=? WHERE target_date=? AND code=?',
+                        (tc, tcs, date, code))
+                    updated += 1
+            except Exception:
+                continue
+
+        conn.commit()
+        print(f'  {date}: 回填 {updated}/{len(codes)} 只')
+
+    conn.close()
+    print('\n回填完成!')
+
+
 # ============================================================
 # 批量主流程
 # ============================================================
@@ -913,7 +978,13 @@ def main():
     parser.add_argument('--date', type=str, help='Process a specific date')
     parser.add_argument('--rescore', type=str, help='Re-score specific dates (comma-separated, deletes old rows first)')
     parser.add_argument('--rescore-nan', action='store_true', help='Re-score dates that have NaN in stock_strength or volume_price_health')
+    parser.add_argument('--backfill-class', action='store_true', help='Backfill trend_class for already-scored stocks (no re-score)')
     args = parser.parse_args()
+
+    # ── 回填模式：不评分, 仅分类 ──
+    if args.backfill_class:
+        backfill_trend_class()
+        return
 
     # ── 确定待处理日期 ──
     if args.rescore:
