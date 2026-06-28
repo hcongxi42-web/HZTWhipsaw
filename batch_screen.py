@@ -712,8 +712,16 @@ class StockScorer:
             # 中心 15%: 年化>15%开始视为趋势, <15%视为弱势
             ma60_score = self._sigmoid(ma60_slope, 15.0, 8.0)
 
-            # 2) MA5 联动确认 — 短期动量校验
-            ma5_slope = self._ma_slope(closes, 5)
+            # 2) MA5 联动确认 — 短期动量校验 (用20点MA5而非5点,避免噪声)
+            ma5_slope = self._ma_slope(closes, 5)  # 先算MA5序列
+            # 用最后20个MA5值做斜率, 更稳健 (5个点太噪, 年化放大荒谬)
+            ma5_series = np.array([closes[max(0,i-4):i+1].mean() for i in range(len(closes))])
+            if len(ma5_series) >= 20:
+                ma5_seg = ma5_series[-20:]
+                x5 = np.arange(20)
+                log_ma5_seg = np.log(np.maximum(ma5_seg, 0.01))
+                s5, _, _, _, _ = stats.linregress(x5, log_ma5_seg)
+                ma5_slope = s5 * 250 * 100
             ma5_divergence = abs(ma5_slope - ma60_slope)  # 背离幅度
             if np.sign(ma5_slope) == np.sign(ma60_slope) and ma60_slope > 0:
                 # 同向向上: 趋势被短期确认 → 高分
@@ -796,12 +804,21 @@ class StockScorer:
         # 趋势门控: 强度中心降到30
         gate = 1.0 / (1.0 + math.exp(-0.15 * (ss - 30)))
 
-        # MA5 健康度校验: 短期动量方向影响gate
+        # MA5 健康度校验: 用20点MA5斜率, 比5点稳健
         n_total = len(self.df)
         strength_end = n_total - 15
-        if strength_end >= 10:
+        if strength_end >= 20:
             s_closes = self.df.iloc[:strength_end]['close'].values
-            ma5_slope = self._ma_slope(s_closes, 5)
+            # 用最后20个MA5值做斜率 (而非5点, 避免噪声放大)
+            ma5_series = np.array([s_closes[max(0,i-4):i+1].mean() for i in range(len(s_closes))])
+            if len(ma5_series) >= 20:
+                ma5_seg = ma5_series[-20:]
+                x5 = np.arange(20)
+                log_ma5_seg = np.log(np.maximum(ma5_seg, 0.01))
+                s5, _, _, _, _ = stats.linregress(x5, log_ma5_seg)
+                ma5_slope = s5 * 250 * 100
+            else:
+                ma5_slope = self._ma_slope(s_closes, 5)
             if ma5_slope > 0:
                 # MA5向上: 趋势健康, gate加成
                 ma5_health = 1.0 + min(0.15, ma5_slope / 500.0)
@@ -810,13 +827,11 @@ class StockScorer:
                 ma5_health = max(0.5, 1.0 + ma5_slope / 200.0)
         else:
             ma5_health = 1.0
+            ma5_slope = 0
 
         # 背离折扣: 分类分<75 且 MA5<0 → 趋势质量存疑, gate额外打折
-        if class_score < 75 and strength_end >= 10:
-            s_closes = self.df.iloc[:strength_end]['close'].values
-            ma5_s = self._ma_slope(s_closes, 5)
-            if ma5_s < 0:
-                gate *= 0.7  # 分类信心不足 + 短期向下 = 趋势可能破裂
+        if class_score < 75 and strength_end >= 20 and ma5_slope < 0:
+            gate *= 0.7  # 分类信心不足 + 短期向下 = 趋势可能破裂
 
         total = raw * gate * ma5_health
         return total, {'stock_strength': ss, 'washout_quality': wo, 'probe_test': pt,
