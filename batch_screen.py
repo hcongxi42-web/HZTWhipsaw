@@ -1108,6 +1108,7 @@ def main():
     parser.add_argument('--date', type=str, help='Process a specific date')
     parser.add_argument('--rescore', type=str, help='Re-score specific dates (comma-separated, deletes old rows first)')
     parser.add_argument('--rescore-nan', action='store_true', help='Re-score dates that have NaN in stock_strength or volume_price_health')
+    parser.add_argument('--rescore-all', action='store_true', help='Delete ALL screening_history and re-score every date from scratch')
     parser.add_argument('--backfill-class', action='store_true', help='Backfill trend_class for already-scored stocks (no re-score)')
     args = parser.parse_args()
 
@@ -1117,7 +1118,16 @@ def main():
         return
 
     # ── 确定待处理日期 ──
-    if args.rescore:
+    if args.rescore_all:
+        conn_temp = sqlite3.connect(DB_PATH)
+        cur = conn_temp.execute("SELECT DISTINCT target_date FROM screening_history ORDER BY target_date")
+        all_dates = [r[0] for r in cur]
+        conn_temp.execute("DELETE FROM screening_history")
+        conn_temp.commit()
+        conn_temp.close()
+        dates = all_dates
+        print(f'全量重评: 已清空 screening_history, 共 {len(dates)} 个日期: {dates}')
+    elif args.rescore:
         dates = [d.strip() for d in args.rescore.split(',') if d.strip()]
         rescue_mode = True
     elif args.rescore_nan:

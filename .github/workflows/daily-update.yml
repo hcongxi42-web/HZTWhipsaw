@@ -13,6 +13,10 @@ on:
       date:
         description: '目标日期 (YYYY-MM-DD, 留空=最新)'
         required: false
+      rescore_all:
+        description: '全量重评 (删除全部旧评分, 从头重算所有日期)'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -71,7 +75,9 @@ jobs:
 
       - name: Run screening for new dates
         run: |
-          if [ -n "${{ github.event.inputs.date }}" ]; then
+          if [ "${{ github.event.inputs.rescore_all }}" == "true" ]; then
+            python batch_screen.py --rescore-all
+          elif [ -n "${{ github.event.inputs.date }}" ]; then
             python batch_screen.py --date ${{ github.event.inputs.date }}
           else
             python batch_screen.py --latest
