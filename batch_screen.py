@@ -500,8 +500,12 @@ class StockScorer:
         # 斜率评分: 趋势类用sigmoid(奖励涨得快), 震荡类用Bell(奖励适中)
         if trend_class == 'trend':
             # sigmoid: 年化25%→50分, 50%→88分, 75%+→98分
-            # 不惩罚陡峭斜率 — 趋势越强分越高
             slope_score = self._sigmoid(annual_slope, 25.0, 0.08)
+            # 极值保护: 年化>120% → 加速赶顶风险, 施加连续衰减
+            # 120%→不衰减, 160%→打8折, 200%→打6折, 220%→打5折(底线)
+            if annual_slope > 120:
+                decay = max(0.50, 1.0 - (annual_slope - 120) / 200.0)
+                slope_score *= decay
         else:
             slope_score = self._bell(annual_slope, 25, 18)
 
@@ -755,6 +759,50 @@ class StockScorer:
         trend_class = 'trend' if score >= 55 else 'choppy'
         return (trend_class, round(score, 1))
 
+    def _detect_trend_phase(self, strength):
+        """趋势生命周期识别：将强度窗口分为前段(前2/3)和后段(后1/3)，比较斜率变化。
+        A股现实：加速赶顶是最大的追高风险。
+        返回: ('accelerating'|'steady'|'decelerating', 后段斜率, 前段斜率)"""
+        n = len(strength)
+        if n < 30:
+            return ('steady', 0, 0)  # 数据不足, 默认匀速
+
+        split = n * 2 // 3  # 前2/3 vs 后1/3
+        early = strength.iloc[:split]
+        late = strength.iloc[split:]
+
+        if len(early) < 10 or len(late) < 10:
+            return ('steady', 0, 0)
+
+        # 前段斜率
+        x1 = np.arange(len(early))
+        log_y1 = np.log(np.maximum(early['close'].values, 0.01))
+        s1, _, _, _, _ = stats.linregress(x1, log_y1)
+        early_slope = s1 * 250 * 100  # 年化%
+
+        # 后段斜率
+        x2 = np.arange(len(late))
+        log_y2 = np.log(np.maximum(late['close'].values, 0.01))
+        s2, _, _, _, _ = stats.linregress(x2, log_y2)
+        late_slope = s2 * 250 * 100  # 年化%
+
+        # 阶段判断
+        if abs(early_slope) < 0.5:
+            return ('steady', late_slope, early_slope)  # 前段基本没趋势
+
+        ratio = late_slope / max(abs(early_slope), 0.1)
+        if early_slope > 0:
+            # 上升趋势中
+            if ratio > 1.5:
+                return ('accelerating', late_slope, early_slope)
+            elif ratio < 0.5:
+                return ('decelerating', late_slope, early_slope)
+            else:
+                return ('steady', late_slope, early_slope)
+        else:
+            # 下降趋势
+            return ('steady', late_slope, early_slope)
+
     def trend_consistency(self):
         """P2：前期趋势 vs 近期调整的方向一致性校验
         - 前期涨 + 近期回调 → 健康洗盘 (高分)
@@ -803,6 +851,13 @@ class StockScorer:
         # 趋势门控: 强度中心降到30
         gate = 1.0 / (1.0 + math.exp(-0.15 * (ss - 30)))
 
+        # 趋势生命周期调整: 加速段微奖励, 减速段降权
+        phase = getattr(self, '_trend_phase', 'steady')
+        if phase == 'accelerating':
+            gate *= 1.05  # 加速段: 顺势持有, 微奖励
+        elif phase == 'decelerating':
+            gate *= 0.75  # 减速段: 趋势在瓦解, 显著降权
+
         # MA5 健康度校验: 用20点MA5斜率, 比5点稳健
         n_total = len(self.df)
         strength_end = n_total - 15
@@ -837,6 +892,55 @@ class StockScorer:
                        'ma_convergence': mc, 'launch_readiness': lr,
                        'volume_price_health': vph, 'fund_flow': ff, 'volume_health': vh}
 
+    def _choppy_direction_bias(self):
+        """震荡突破方向偏斜：不只是'会不会突破'，而是'往哪突破'。
+        A股现实：横盘后向上突破和向下破位的概率不同，需要方向判断。
+        返回 0-100 分数 (>50偏多, <50偏空)"""
+        n_total = len(self.df)
+        strength_end = n_total - 15
+        if strength_end < 10:
+            return 50  # 数据不足, 中性
+        strength = self.df.iloc[:strength_end]
+        d = strength.tail(20)
+        if len(d) < 10:
+            return 50
+
+        # 1. 区间位置 (40%): 价格在近期区间的相对位置, 靠近上沿=偏多
+        recent_high = d['high'].max()
+        recent_low = d['low'].min()
+        range_span = recent_high - recent_low
+        if range_span > 0 and recent_low > 0:
+            price_pos = (d['close'].iloc[-1] - recent_low) / range_span
+            # sigmoid 中心 0.55: 价格在区间中上位置时开始加分
+            pos_score = self._sigmoid(price_pos, 0.55, 8.0)
+        else:
+            pos_score = 50
+
+        # 2. 量能方向 (35%): 上涨日总成交额 vs 下跌日总成交额, >1.15=资金在收集
+        up_amount = d[d['ret'] > 0]['amount'].sum()
+        down_amount = d[d['ret'] < 0]['amount'].sum()
+        if down_amount > 0:
+            amount_ratio = up_amount / down_amount
+            vol_score = self._sigmoid(amount_ratio, 1.15, 5.0)
+        else:
+            vol_score = 80  # 无下跌日, 偏多
+
+        # 3. 突破前兆 (25%): 最近3天振幅是否在收窄 (三角形收敛末端特征)
+        last3 = d.tail(3)
+        prev3 = d.iloc[-6:-3] if len(d) >= 6 else d.head(0)
+        if len(last3) >= 3 and len(prev3) >= 3:
+            recent_amp = last3['amplitude'].mean()
+            earlier_amp = prev3['amplitude'].mean()
+            if earlier_amp > 0:
+                contraction = 1.0 - recent_amp / earlier_amp  # 正值=收窄
+                contract_score = self._sigmoid(contraction, 0.05, 30.0)
+            else:
+                contract_score = 50
+        else:
+            contract_score = 50
+
+        return pos_score * 0.40 + vol_score * 0.35 + contract_score * 0.25
+
     def _compute_choppy_total(self, ss):
         """震荡引擎：6维度 + 潜伏门控。
         答'这个横盘值得潜伏吗' — 奖励均线收敛+试盘+缩量, 弱化强度"""
@@ -860,6 +964,13 @@ class StockScorer:
 
         # 震荡股不适用趋势一致性 (本来就没趋势)
         total = raw * gate
+
+        # 方向偏斜调整: 向上偏斜奖励, 向下偏斜惩罚 (max ±10%)
+        direction_bias = self._choppy_direction_bias()
+        if direction_bias > 60:
+            total *= 1.0 + (direction_bias - 60) / 400.0   # bias=100 → +10%
+        elif direction_bias < 40:
+            total *= 1.0 - (40 - direction_bias) / 400.0    # bias=0 → -10%
         return total, {'stock_strength': ss, 'washout_quality': wo, 'probe_test': pt,
                        'ma_convergence': mc, 'launch_readiness': lr,
                        'volume_price_health': vph, 'fund_flow': ff, 'volume_health': vh}
@@ -874,6 +985,11 @@ class StockScorer:
         if strength_end >= 10:
             strength = self.df.iloc[:strength_end]
             trend_class, class_score = self._classify_trend(strength)
+            # 趋势生命周期检测 (用于趋势引擎 gate 调整)
+            if trend_class == 'trend':
+                self._trend_phase, self._late_slope, self._early_slope = self._detect_trend_phase(strength)
+            else:
+                self._trend_phase = 'steady'
         else:
             trend_class, class_score = 'choppy', 0
 
