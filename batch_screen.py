@@ -20,7 +20,7 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data.d
 LOOKBACK_DAYS = 60  # 股票强度需要更长回溯(前45天+近15天)
 MIN_TURN = 2.0
 MIN_PRICE = 5.0
-MAX_PRICE = 500.0
+# MAX_PRICE 已移除 — 不限制最高股价
 
 # ============================================================
 # 辅助函数
@@ -54,7 +54,6 @@ def get_eligible_stocks(target, start):
         JOIN avg_data a ON l.code = a.code
         WHERE a.avg_turn >= {MIN_TURN}
           AND a.avg_close >= {MIN_PRICE}
-          AND a.avg_close <= {MAX_PRICE}
           AND l.close > 0
           AND a.n_days >= {LOOKBACK_DAYS * 0.6}
     """, conn)
