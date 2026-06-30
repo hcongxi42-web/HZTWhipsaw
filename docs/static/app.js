@@ -81,6 +81,34 @@ async function init() {
       if (allStocks.length > 0) updateStats({ date: currentDate, total: allStocks.length });
     });
   });
+
+  // ── Mobile: sidebar drawer ──
+  const menuBtn = document.getElementById('menuBtn');
+  const sidebar = document.getElementById('sidebar');
+  const overlay = document.getElementById('sidebarOverlay');
+  const closeBtn = document.getElementById('sidebarCloseBtn');
+
+  function openSidebar() {
+    sidebar.classList.add('open');
+    overlay.classList.add('show');
+    document.body.style.overflow = 'hidden';
+  }
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('show');
+    document.body.style.overflow = '';
+  }
+  if (menuBtn) menuBtn.addEventListener('click', openSidebar);
+  if (closeBtn) closeBtn.addEventListener('click', closeSidebar);
+  if (overlay) overlay.addEventListener('click', closeSidebar);
+
+  // Close sidebar when a select filter changes (user made a choice)
+  sidebar.querySelectorAll('select').forEach(el => {
+    el.addEventListener('change', () => {
+      if (window.innerWidth <= 768) closeSidebar();
+    });
+  });
+
   await loadData();
 }
 init();
@@ -334,11 +362,31 @@ async function selectStock(code) {
   } catch(e) { /* no history */ }
 
   renderDetail(stock, historyData);
+
+  // Mobile: slide in detail panel
+  if (window.innerWidth <= 768) {
+    const panel = document.getElementById('detailPanel');
+    panel.classList.add('open');
+    document.body.style.overflow = 'hidden';
+    // Resize charts after slide-in animation completes (250ms)
+    setTimeout(() => {
+      if (radarChart) radarChart.resize();
+      if (historyChart) historyChart.resize();
+      if (klineChart) klineChart.resize();
+    }, 300);
+  }
+}
+
+function closeDetailMobile() {
+  document.getElementById('detailPanel').classList.remove('open');
+  document.body.style.overflow = '';
 }
 
 function renderDetail(stock, hist) {
   const panel = document.getElementById('detailPanel');
+  const isMobile = window.innerWidth <= 768;
   panel.innerHTML = `
+    ${isMobile ? '<button class="detail-back-btn" id="detailBackBtn">&larr; 返回列表</button>' : ''}
     <div class="detail-header">
       <div>
         <div class="name">${stock.name} <span class="class-tag ${stock.trend_class || 'choppy'}">${stock.trend_class === 'trend' ? '趋势' : '震荡'}</span></div>
@@ -400,6 +448,10 @@ function renderDetail(stock, hist) {
       </div>
     </div>
   `;
+
+  // Mobile: back button listener
+  const backBtn = document.getElementById('detailBackBtn');
+  if (backBtn) backBtn.addEventListener('click', closeDetailMobile);
 
   setTimeout(() => renderRadar(stock), 50);
   setTimeout(() => renderHistory(hist), 80);

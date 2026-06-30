@@ -10,6 +10,7 @@
 <body>
 
 <header>
+  <button class="menu-btn" id="menuBtn" aria-label="菜单">&#9776;</button>
   <h1>HZTwhipsaw <span class="subtitle">量价洗盘评分系统</span></h1>
   <div class="class-toggle" id="classToggle">
     <button class="class-btn active" data-class="all">全部</button>
@@ -30,7 +31,11 @@
 <div class="tip-bar">Tips：打分不代表未来上涨，仅代表当前洗盘形态，需依据个股概念和情况进行选择</div>
 
 <div class="main-container">
-  <aside class="sidebar">
+  <!-- 移动端侧栏遮罩 -->
+  <div class="sidebar-overlay" id="sidebarOverlay"></div>
+
+  <aside class="sidebar" id="sidebar">
+    <button class="sidebar-close-btn" id="sidebarCloseBtn" aria-label="关闭菜单">&times;</button>
     <div class="filter-group">
       <label>目标日期</label>
       <select id="dateSelect"><option value="">加载中...</option></select>
