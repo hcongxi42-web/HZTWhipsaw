@@ -30,9 +30,9 @@ function barColor(v) {
   if (v >= 50) return COLORS.slate; return COLORS.brick;
 }
 
-// ── Industry color palette ──
-const IND_COLORS = {};
-const IND_PALETTE = [
+// ── Concept color palette ──
+const CON_COLORS = {};
+const CON_PALETTE = [
   '#6B7B8A','#7A8B6B','#8B7A6B','#6B8B7A','#7A6B8B','#8B6B7A',
   '#5C6E7A','#6E7A5C','#7A5C6E','#5C7A6E','#6E5C7A','#7A6E5C',
   '#4A5C6B','#5C6B4A','#6B4A5C','#4A6B5C','#5C4A6B','#6B5C4A',
@@ -48,13 +48,13 @@ const IND_PALETTE = [
   '#5E5856','#585E56','#5E5658','#565E58','#58565E','#5E5856',
   '#4E4A48','#4A4E48','#4E484A','#484E4A',
 ];
-let _indColorIdx = 0;
-function getIndustryColor(industry) {
-  if (!IND_COLORS[industry]) {
-    IND_COLORS[industry] = IND_PALETTE[_indColorIdx % IND_PALETTE.length];
-    _indColorIdx++;
+let _conColorIdx = 0;
+function getConceptColor(concept) {
+  if (!CON_COLORS[concept]) {
+    CON_COLORS[concept] = CON_PALETTE[_conColorIdx % CON_PALETTE.length];
+    _conColorIdx++;
   }
-  return IND_COLORS[industry];
+  return CON_COLORS[concept];
 }
 
 function stripCode(code) {
@@ -67,7 +67,7 @@ function stripCode(code) {
 // ── Init ──
 async function init() {
   await loadDates();
-  await loadIndustries();
+  await loadConcepts();
   await loadStorage();
   // Class toggle buttons
   document.querySelectorAll('.class-btn').forEach(btn => {
@@ -134,15 +134,15 @@ async function loadDates() {
   } catch(e) { console.error('Failed to load dates', e); }
 }
 
-// ── Load industries ──
-async function loadIndustries() {
+// ── Load concepts ──
+async function loadConcepts() {
   try {
-    const r = await fetch('data/industries.json');
+    const r = await fetch('data/concepts.json');
     const d = await r.json();
-    const sel = document.getElementById('industrySelect');
-    sel.innerHTML = '<option value="all">全部行业</option>' +
-      d.industries.map(ind => `<option value="${ind}">${ind}</option>`).join('');
-  } catch(e) { console.error('Failed to load industries', e); }
+    const sel = document.getElementById('conceptSelect');
+    sel.innerHTML = '<option value="all">全部概念</option>' +
+      d.concepts.map(c => `<option value="${c}">${c}</option>`).join('');
+  } catch(e) { console.error('Failed to load concepts', e); }
 }
 
 // ── Load storage monitor ──
@@ -237,10 +237,10 @@ function getFiltered() {
   else if (board === 'chi') stocks = stocks.filter(s => /sz\.30/.test(s.code));
   else if (board === 'bj') stocks = stocks.filter(s => /bj\./.test(s.code));
 
-  // Industry
-  const industry = document.getElementById('industrySelect').value;
-  if (industry && industry !== 'all') {
-    stocks = stocks.filter(s => s.industry === industry);
+  // Concept
+  const concept = document.getElementById('conceptSelect').value;
+  if (concept && concept !== 'all') {
+    stocks = stocks.filter(s => s.concept === concept);
   }
 
   // Exclude limit-up
@@ -293,7 +293,7 @@ function renderTable() {
       <td class="col-dim ${scoreClass(s.launch_readiness)}">${s.launch_readiness}</td>
       <td class="col-dim ${scoreClass(s.volume_price_health||0)}">${(s.volume_price_health||0).toFixed(0)}</td>
       <td class="col-probe">${s.probe_count}</td>
-      <td class="col-industry"><span style="color:${getIndustryColor(s.industry)};font-weight:600;white-space:nowrap;">${s.industry}</span></td>
+      <td class="col-concept"><span style="color:${getConceptColor(s.concept)};font-weight:600;white-space:nowrap;">${s.concept}</span></td>
       <td class="col-price">${s.latest_close.toFixed(2)}</td>
       <td class="col-pct ${pctClass(s.latest_pctChg)}">${s.latest_pctChg >= 0 ? '+' : ''}${s.latest_pctChg.toFixed(2)}%</td>
     </tr>
@@ -328,7 +328,7 @@ document.getElementById('stockTable').addEventListener('click', function(e) {
 });
 
 // ── Filter change handlers ──
-['searchInput', 'boardSelect', 'industrySelect', 'limitFilter'].forEach(id => {
+['searchInput', 'boardSelect', 'conceptSelect', 'limitFilter'].forEach(id => {
   const el = document.getElementById(id);
   el.addEventListener(id === 'searchInput' ? 'input' : 'change', () => { currentPage = 1; renderTable(); });
 });
@@ -397,7 +397,7 @@ function renderDetail(stock, hist) {
     <div class="detail-price-row">
       <span>收盘 <strong>${stock.latest_close.toFixed(2)}</strong></span>
       <span>涨跌 <strong class="${pctClass(stock.latest_pctChg)}">${stock.latest_pctChg >= 0 ? '+' : ''}${stock.latest_pctChg.toFixed(2)}%</strong></span>
-      <span>行业 <strong>${stock.industry}</strong></span>
+      <span>概念 <strong>${stock.concept}</strong></span>
     </div>
 
     <div class="radar-box" id="radarChart"></div>
@@ -439,8 +439,8 @@ function renderDetail(stock, hist) {
         <div class="lbl">最近试盘</div>
       </div>
       <div class="detail-stat">
-        <div class="val">${stock.industry !== '—' ? stock.industry : '—'}</div>
-        <div class="lbl">所属行业</div>
+        <div class="val">${stock.concept !== '—' ? stock.concept : '—'}</div>
+        <div class="lbl">所属概念</div>
       </div>
       <div class="detail-stat">
         <div class="val">${stock.rank}</div>

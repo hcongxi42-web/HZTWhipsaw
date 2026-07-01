@@ -14,18 +14,18 @@ DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data.d
 DOCS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'docs')
 DATA_DIR = os.path.join(DOCS_DIR, 'data')
 HISTORY_DIR = os.path.join(DATA_DIR, 'history')
-INDUSTRY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'industry.csv')
+CONCEPT_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'concept.csv')
 
 
-def load_industry_map():
-    """加载行业映射"""
-    if not os.path.exists(INDUSTRY_PATH):
+def load_concept_map():
+    """加载概念映射"""
+    if not os.path.exists(CONCEPT_PATH):
         return {}
-    df = pd.read_csv(INDUSTRY_PATH, encoding='gbk', dtype=str)
-    ind_map = {}
+    df = pd.read_csv(CONCEPT_PATH, encoding='gbk', dtype=str)
+    cmp_map = {}
     for _, row in df.iterrows():
-        ind_map[row['permno'].strip()] = row['industry_name'].strip()
-    return ind_map
+        cmp_map[row['permno'].strip()] = row['concept_name'].strip()
+    return cmp_map
 
 
 def strip_code(code):
@@ -46,9 +46,9 @@ def safe_round(val, ndigits=1, default=0.0):
     return round(v, ndigits)
 
 
-def get_industry(code, ind_map):
+def get_concept(code, cmp_map):
     raw = strip_code(code)
-    return ind_map.get(raw, '—')
+    return cmp_map.get(raw, '—')
 
 
 def main():
@@ -57,10 +57,10 @@ def main():
 
     conn = sqlite3.connect(DB_PATH)
 
-    # 加载行业映射
-    print('加载行业映射...')
-    ind_map = load_industry_map()
-    print(f'  行业数: {len(ind_map)}')
+    # 加载概念映射
+    print('加载概念映射...')
+    cmp_map = load_concept_map()
+    print(f'  概念数: {len(cmp_map)}')
 
     # 加载股票名称
     print('加载股票名称...')
@@ -120,7 +120,7 @@ def main():
 
     # 逐日期导出
     print('导出各日期数据...')
-    all_industries = set()
+    all_concepts = set()
     for date in dates:
         df = pd.read_sql_query("""
             SELECT code, rank, total, washout_quality, probe_test, ma_convergence,
@@ -136,8 +136,8 @@ def main():
         stocks = []
         for _, row in df.iterrows():
             code = row['code']
-            industry = get_industry(code, ind_map)
-            all_industries.add(industry)
+            concept = get_concept(code, cmp_map)
+            all_concepts.add(concept)
             stocks.append({
                 'code': code,
                 'name': name_map.get(code, '?')[:8],
@@ -155,7 +155,7 @@ def main():
                 'recent_limit_days': int(row['recent_limit_days']),
                 'probe_count': int(row['probe_count']),
                 'days_since_probe': int(row['days_since_probe']),
-                'industry': industry,
+                'concept': concept,
                 'trend_class': row.get('trend_class') or None,
             })
 
@@ -163,11 +163,11 @@ def main():
             json.dump({'date': date, 'total': len(stocks), 'stocks': stocks}, f, ensure_ascii=False)
         print(f'  ✓ {date}: {len(stocks)} stocks')
 
-    # 写入行业列表
-    industries = sorted([i for i in all_industries if i != '—'])
-    with open(os.path.join(DATA_DIR, 'industries.json'), 'w', encoding='utf-8') as f:
-        json.dump({'industries': industries}, f, ensure_ascii=False)
-    print(f'  ✓ industries.json ({len(industries)} industries)')
+    # 写入概念列表
+    concepts = sorted([i for i in all_concepts if i != '—'])
+    with open(os.path.join(DATA_DIR, 'concepts.json'), 'w', encoding='utf-8') as f:
+        json.dump({'concepts': concepts}, f, ensure_ascii=False)
+    print(f'  ✓ concepts.json ({len(concepts)} concepts)')
 
     # 导出各股票历史数据 + K线
     print('导出股票历史数据 + K线...')
@@ -231,7 +231,7 @@ def main():
                 json.dump({
                     'code': code,
                     'name': name_map.get(code, '?'),
-                    'industry': get_industry(code, ind_map),
+                    'concept': get_concept(code, cmp_map),
                     'history': history,
                     'kline': kline,
                 }, f, ensure_ascii=False)
@@ -244,7 +244,7 @@ def main():
     # ── 清理僵尸文件（DB中已删除但JSON残留的日期/股票）──
     dead_dates = 0
     for fn in os.listdir(DATA_DIR):
-        if fn.endswith('.json') and fn not in ('dates.json', 'industries.json', 'storage.json'):
+        if fn.endswith('.json') and fn not in ('dates.json', 'concepts.json', 'storage.json'):
             date_name = fn.replace('.json', '')
             if date_name not in dates:
                 os.remove(os.path.join(DATA_DIR, fn))
