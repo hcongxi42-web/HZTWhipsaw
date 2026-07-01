@@ -215,7 +215,7 @@ header h1 .subtitle {
 .col-pct { width: 56px; font-family: var(--font-mono); }
 .col-limit { width: 36px; }
 .col-probe { width: 44px; }
-.col-concept { width: 72px; font-size: 10px; text-align: center; }
+.col-industry { width: 72px; font-size: 10px; text-align: center; }
 .loading { color: var(--text-faint); font-style: italic; padding: 40px !important; }
 
 /* Score colors — muted academic palette */
@@ -582,7 +582,7 @@ header h1 .subtitle {
   .col-pct   { width: 44px; }
   .col-probe { width: 34px; }
   .col-class { width: 34px; font-size: 9px; }
-  .col-concept { width: 54px; font-size: 9px; }
+  .col-industry { width: 54px; font-size: 9px; }
 
   /* pagination */
   .pagination { padding: 7px 4px; }
@@ -661,7 +661,7 @@ header h1 .subtitle {
   .col-name  { width: 40px; }
   .col-code  { width: 60px; font-size: 8px; }
   .col-dim   { width: 30px; }
-  .col-concept { width: 44px; font-size: 8px; }
+  .col-industry { width: 44px; font-size: 8px; }
 
   .detail-header .name { font-size: 14px; }
   .detail-header .total-score { font-size: 26px; }
