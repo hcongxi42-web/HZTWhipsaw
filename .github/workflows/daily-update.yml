@@ -92,6 +92,9 @@ jobs:
       - name: Slim database (drop unused tables + keep 90 days)
         run: python slim_db.py
 
+      - name: Refresh concept mapping (whitelist filter)
+        run: python build_concept_akshare.py
+
       - name: Generate static site
         run: python generate_static.py
 
