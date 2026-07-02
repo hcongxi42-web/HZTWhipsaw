@@ -1,24 +1,27 @@
 """
 生成 concept.csv（白名单过滤）
+数据源：A股全市场股票概念数据.xlsx（本地 Excel，无需网络）
 策略：
-  1. 如果有 concept_membership.json 缓存 → 从缓存过滤（无需 API）
-  2. 如果缓存不存在且 AKShare 可用 → 爬取全量数据，保存缓存，再过滤
-  3. 都不行 → 从现有 concept.csv 硬过滤（仅保留白名单概念，其余→'—'）
+  1. 读取 Excel → 解析每只股票的概念列表
+  2. 过滤出白名单概念
+  3. 每个股票选「最聚焦」的白名单概念（全市场出现次数最少）
+  4. 无白名单概念的股票 → 不写入（generate_static 会给 '—'）
 
 用法：
-  python build_concept_akshare.py          # 默认：优先缓存
-  python build_concept_akshare.py --refresh # 强制重新爬取
+  python build_concept_akshare.py          # 默认：从 Excel 读取
+  python build_concept_akshare.py --akshare # 强制从 AKShare 爬取（需网络）
 """
 import os, sys, json, time
 from collections import Counter
 
 DIR = os.path.dirname(os.path.abspath(__file__))
-MEMBERSHIP_PATH = os.path.join(DIR, 'concept_membership.json')
+EXCEL_PATH = os.path.join(DIR, 'A股全市场股票概念数据.xlsx')
 WHITELIST_PATH = os.path.join(DIR, 'whitelist_mapping.json')
+MEMBERSHIP_PATH = os.path.join(DIR, 'concept_membership.json')
 OUT_PATH = os.path.join(DIR, 'concept.csv')
 DB_PATH = os.path.join(DIR, 'stock_data.db')
 
-FORCE_REFRESH = '--refresh' in sys.argv
+USE_AKSHARE = '--akshare' in sys.argv
 
 # ── 加载白名单 ──
 with open(WHITELIST_PATH, 'r', encoding='utf-8') as f:
@@ -27,8 +30,64 @@ WHITELIST = set(wl_data['whitelist'])
 print(f"Whitelist: {len(WHITELIST)} concepts")
 
 
+def parse_excel():
+    """从 Excel 解析股票→概念映射"""
+    import pandas as pd
+
+    df = pd.read_excel(EXCEL_PATH, header=None)
+
+    stock_concepts = {}  # code -> list of concepts
+    concept_freq = Counter()  # how many stocks each concept covers
+
+    for i in range(2, len(df)):
+        code_raw = str(df.iloc[i, 1])
+        if code_raw == 'nan':
+            continue
+        code = code_raw.strip().zfill(6)  # "1" -> "000001"
+
+        concepts_str = df.iloc[i, 3]
+        if pd.isna(concepts_str):
+            stock_concepts[code] = []
+            continue
+
+        concepts = [c.strip() for c in str(concepts_str).split('、') if c.strip()]
+        stock_concepts[code] = concepts
+        for c in set(concepts):
+            concept_freq[c] += 1
+
+    print(f"  Excel: {len(stock_concepts)} stocks, {len(concept_freq)} unique concepts")
+    return stock_concepts, concept_freq
+
+
+def filter_and_pick(stock_concepts, concept_freq):
+    """为每只股票选最聚焦的白名单概念"""
+    lines = []
+    whitelisted_stocks = 0
+    no_wl_stocks = 0
+    empty_stocks = 0
+
+    for code, concepts in stock_concepts.items():
+        if not concepts:
+            empty_stocks += 1
+            continue
+
+        # 过滤白名单 + 按出现次数排序（取最小=最聚焦）
+        wl_candidates = [(c, concept_freq.get(c, 0)) for c in concepts if c in WHITELIST]
+        if wl_candidates:
+            wl_candidates.sort(key=lambda x: x[1])
+            lines.append((code, wl_candidates[0][0]))
+            whitelisted_stocks += 1
+        else:
+            no_wl_stocks += 1
+
+    lines.sort(key=lambda x: x[0])
+    print(f"  Whitelisted: {whitelisted_stocks}, No whitelist concept: {no_wl_stocks}, "
+          f"Empty concept: {empty_stocks}")
+    return lines
+
+
 def fetch_from_akshare():
-    """从 AKShare 爬取全量概念成员数据，保存到 JSON 缓存"""
+    """从 AKShare 爬取全量概念成员数据（备选方案）"""
     import akshare as ak
 
     print("  Fetching concept names...")
@@ -46,7 +105,7 @@ def fetch_from_akshare():
             codes = [str(c).strip() for c in df['代码'].tolist() if len(str(c).strip()) == 6]
             cnt = len(codes)
 
-            if cnt > 300:  # 太泛的概念跳过
+            if cnt > 300:
                 if (i + 1) % 100 == 0:
                     print(f"    [{i+1}/{total}] skip... ok:{len(stock_map)} fail:{failed}")
                 time.sleep(0.15)
@@ -69,7 +128,6 @@ def fetch_from_akshare():
 
     print(f"  Done. stocks:{len(stock_map)} failed:{failed}")
 
-    # 保存缓存
     with open(MEMBERSHIP_PATH, 'w', encoding='utf-8') as f:
         json.dump({'stock_map': stock_map, 'concept_count': len(concept_names)},
                   f, ensure_ascii=False)
@@ -78,43 +136,16 @@ def fetch_from_akshare():
     return stock_map
 
 
-def filter_from_cache(stock_map):
-    """从全量成员数据中为每只股票选最聚焦的白名单概念"""
+def filter_from_akshare_cache(stock_map):
+    """从 AKShare 全量成员数据中为每只股票选最聚焦的白名单概念"""
     lines = []
     for code, concepts in stock_map.items():
-        # 只保留白名单概念
         whitelist_concepts = [(name, cnt) for name, cnt in concepts.items() if name in WHITELIST]
         if whitelist_concepts:
-            # 选成分股数最小的（最聚焦）
             whitelist_concepts.sort(key=lambda x: x[1])
             lines.append((code, whitelist_concepts[0][0]))
-        # 否则丢弃（不写入）
 
     lines.sort(key=lambda x: x[0])
-    return lines
-
-
-def hard_filter_existing():
-    """从现有 concept.csv 硬过滤：只保留白名单概念，其余丢弃"""
-    import pandas as pd
-
-    try:
-        df = pd.read_csv(OUT_PATH, encoding='gbk', dtype=str)
-    except FileNotFoundError:
-        print("  ERROR: concept.csv not found, cannot hard-filter")
-        return []
-
-    lines = []
-    removed = 0
-    for _, row in df.iterrows():
-        code = row['permno'].strip()
-        concept = row['concept_name'].strip()
-        if concept in WHITELIST:
-            lines.append((code, concept))
-        else:
-            removed += 1
-
-    print(f"  Hard-filter: kept {len(lines)}, removed {removed} (non-whitelist)")
     return lines
 
 
@@ -128,7 +159,9 @@ def coverage_report(lines):
     for r in conn.execute('SELECT DISTINCT code FROM screening_history'):
         c = r[0]
         for p in ['sz.', 'sh.', 'bj.']:
-            if c.startswith(p): c = c[3:]; break
+            if c.startswith(p):
+                c = c[3:]
+                break
         sh.add(c)
     conn.close()
 
@@ -142,25 +175,32 @@ def coverage_report(lines):
 t0 = time.time()
 lines = None
 
-if FORCE_REFRESH or not os.path.exists(MEMBERSHIP_PATH):
-    # 尝试 AKShare
+if USE_AKSHARE:
+    # AKShare 模式（备选）
+    print("Mode: AKShare (network required)")
     try:
         stock_map = fetch_from_akshare()
+        lines = filter_from_akshare_cache(stock_map)
     except Exception as e:
         print(f"  AKShare failed: {e}")
-        stock_map = None
-
-    if stock_map:
-        lines = filter_from_cache(stock_map)
-    else:
-        print("  Fallback: hard-filter existing concept.csv")
-        lines = hard_filter_existing()
+        sys.exit(1)
+elif os.path.exists(EXCEL_PATH):
+    # Excel 模式（默认）
+    print("Mode: Excel (local file)")
+    stock_concepts, concept_freq = parse_excel()
+    lines = filter_and_pick(stock_concepts, concept_freq)
 else:
-    # 从缓存读取
-    with open(MEMBERSHIP_PATH, 'r', encoding='utf-8') as f:
-        cache = json.load(f)
-    print(f"  Loaded concept_membership.json ({len(cache['stock_map'])} stocks)")
-    lines = filter_from_cache(cache['stock_map'])
+    # Excel 不在 → 尝试 concept_membership.json 缓存
+    print("Mode: concept_membership.json cache")
+    if os.path.exists(MEMBERSHIP_PATH):
+        with open(MEMBERSHIP_PATH, 'r', encoding='utf-8') as f:
+            cache = json.load(f)
+        print(f"  Loaded cache ({len(cache['stock_map'])} stocks)")
+        lines = filter_from_akshare_cache(cache['stock_map'])
+    else:
+        print("ERROR: No data source available!")
+        print("  Place A股全市场股票概念数据.xlsx in the project root, or use --akshare")
+        sys.exit(1)
 
 if not lines:
     print("ERROR: No data generated!")
@@ -174,11 +214,20 @@ with open(OUT_PATH, 'w', encoding='gbk', newline='') as f:
     f.write('permno,concept_name\n')
     for code, name in lines:
         f.write(f'{code},{name}\n')
-print(f"  Wrote concept.csv: {len(lines)} stocks, {len(set(n for _, n in lines))} concepts")
+
+unique_concepts = set(n for _, n in lines)
+print(f"  Wrote concept.csv: {len(lines)} stocks, {len(unique_concepts)} concepts")
+
+# ── 白名单验证 ──
+violations = unique_concepts - WHITELIST
+if violations:
+    print(f"  !! WHITELIST VIOLATIONS: {violations}")
+else:
+    print(f"  [OK] All {len(unique_concepts)} concepts in whitelist")
 
 # ── Top 概念 ──
-top = Counter(n for _, n in lines).most_common(15)
-print(f"\n  Top 15 whitelisted concepts:")
+top = Counter(n for _, n in lines).most_common(20)
+print(f"\n  Top 20 whitelisted concepts:")
 for name, cnt in top:
     print(f"    {name}: {cnt}")
 
