@@ -1416,15 +1416,17 @@ def main():
     if args.rescore_all:
         conn_temp = sqlite3.connect(DB_PATH)
         cur = conn_temp.execute("SELECT DISTINCT target_date FROM screening_history ORDER BY target_date")
-        all_dates = [r[0] for r in cur]
+        old_dates = set(r[0] for r in cur)
         conn_temp.execute("DELETE FROM screening_history")
         conn_temp.commit()
         conn_temp.close()
-        dates = all_dates
-        # 如果 screening_history 为空（首次运行），回退到取所有可用日期
-        if not dates:
-            dates = get_missing_dates()
-        print(f'全量重评: 已清空 screening_history, 共 {len(dates)} 个日期: {dates}')
+        # 合并新日期（stock_daily 中有但 screening_history 中没有的）
+        new_dates = set(get_missing_dates())
+        dates = sorted(old_dates | new_dates)
+        if new_dates:
+            print(f'全量重评: {len(old_dates)} 个旧日期 + {len(new_dates)} 个新日期 = {len(dates)} 个')
+        else:
+            print(f'全量重评: {len(dates)} 个日期')
     elif args.rescore:
         dates = [d.strip() for d in args.rescore.split(',') if d.strip()]
         rescue_mode = True
