@@ -158,6 +158,98 @@ class StockScorer:
         self.df = d
         self.limit_pct = limit_pct
 
+    # ── 动态 Y/L 摆动点检测 ──
+    def _find_swing_points(self, M=6):
+        """找到真正的局部高 Y 和局部低 L，自适应划分上涨段/调整段。
+
+        算法：
+          Y: 从 T-1 向前找第一个局部高点（M 日窗口），且之后到 T-1 无更高收盘价
+          L: 从 Y-1 向前找第一个局部低点（M 日窗口），且之前到数据起点无更低收盘价
+
+        自适应 M: 高波动率 → 加大 M 滤噪，低波动率 → 减小 M 避免漏信号
+        递归降级: M 找不到 → M-2 重试，最小到 2
+        兜底: 找不到就用 argmax/argmin
+
+        返回 (Y_idx, L_idx)，索引从0起
+        """
+        closes = self.df['close'].values
+        n = len(closes)
+        if n < 20:
+            # 数据太短，回退固定切分
+            split = max(n - 5, n * 2 // 3)
+            return split, split // 2
+
+        # ── M 自适应：基于近20日振幅均值 ──
+        if 'amplitude' in self.df.columns:
+            recent_amp = self.df['amplitude'].tail(20).mean()
+        else:
+            recent_amp = 0.03  # 默认 3%
+        if recent_amp > 0.055:
+            M = min(M + 2, 10)   # 高波动 → 大窗口滤噪
+        elif recent_amp < 0.022:
+            M = max(M - 2, 3)    # 低波动 → 小窗口不丢信号
+
+        def _is_local_max(i, m):
+            if i < m or i + m >= n:
+                return False
+            w = closes[i-m:i+m+1]
+            mx = w.max()
+            return closes[i] == mx and list(w).count(mx) == 1
+
+        def _is_local_min(i, m):
+            if i < m or i + m >= n:
+                return False
+            w = closes[i-m:i+m+1]
+            mn = w.min()
+            return closes[i] == mn and list(w).count(mn) == 1
+
+        # ── 找 Y：最近局部高点，之后无新高 ──
+        Y_idx = None
+        cur_M = M
+        while Y_idx is None and cur_M >= 2:
+            for i in range(n - 2, cur_M - 1, -1):
+                if _is_local_max(i, cur_M):
+                    # 条件2：之后到 T-1 无更高收盘价
+                    if closes[i] >= closes[i+1:].max():
+                        Y_idx = i
+                        break
+            cur_M -= 2
+
+        # 兜底：用 [0, T-1] 区间最高点
+        if Y_idx is None:
+            Y_idx = int(np.argmax(closes[:-1])) if n > 1 else n - 2
+
+        # 确保最小调整段长度（至少 5 天）
+        if Y_idx > n - 6:
+            Y_idx = n - 6
+        Y_idx = max(5, Y_idx)  # 最前留 5 天给上涨段
+
+        # ── 找 L：最近局部低点，之前无新低 ──
+        L_idx = None
+        cur_M = M
+        while L_idx is None and cur_M >= 2:
+            for i in range(Y_idx - 1, cur_M - 1, -1):
+                if _is_local_min(i, cur_M):
+                    # 条件2：之前到数据起点无更低收盘价
+                    if closes[i] <= closes[:i].min():
+                        L_idx = i
+                        break
+            cur_M -= 2
+
+        # 兜底：用 [0, Y-1] 区间最低点
+        if L_idx is None:
+            L_idx = int(np.argmin(closes[:Y_idx]))
+
+        # 确保最小上涨段长度（至少 12 天）
+        min_up_len = 12
+        if Y_idx - L_idx < min_up_len:
+            search_start = max(0, Y_idx - 30)
+            L_idx = int(search_start + np.argmin(closes[search_start:Y_idx]))
+            if Y_idx - L_idx < min_up_len:
+                L_idx = max(0, Y_idx - min_up_len)
+
+        return Y_idx, L_idx
+
     # ── 连续映射工具函数 ──
     @staticmethod
     def _sigmoid(x, center, steepness):
@@ -173,12 +265,18 @@ class StockScorer:
 
     def score_washout_quality(self, recent_days=15, strength_score=None):
         """洗盘质量: 缩量程度40% + 缩量占比35% + 回撤深度25% (全连续)
+        v4: 使用动态调整段 [Y, T]，无动态划分时退回到 tail(recent_days)
         P0门控：strength_score<20 → 无涨可洗，缩量阴跌不是洗盘 → return 0"""
         # 新增前置门控：没有上涨前科的缩量下跌 = 阴跌，不是洗盘
         if strength_score is not None and strength_score < 20:
             return 0
 
-        d = self.df.tail(recent_days)
+        # v4: 优先用动态调整段
+        Y_idx = getattr(self, 'Y_idx', None)
+        if Y_idx is not None and Y_idx + 1 < len(self.df):
+            d = self.df.iloc[Y_idx + 1:]  # 动态调整段 [Y+1, T]
+        else:
+            d = self.df.tail(recent_days)  # fallback
         down_days = d[d['ret'] < 0]
         n_down = len(down_days)
 
@@ -204,8 +302,14 @@ class StockScorer:
         return shrink_score * 0.40 + shrink_pct_score * 0.35 + dd_score * 0.25
 
     def score_probe_test(self, recent_days=15):
-        """试盘信号: 上影线30% + 量能25% + 试盘后走势35% + 频率加成10% (全连续)"""
-        d = self.df.tail(recent_days)
+        """试盘信号: 上影线30% + 量能25% + 试盘后走势35% + 频率加成10% (全连续)
+        v4: 使用动态调整段 [Y, T]，无动态划分时退回到 tail(recent_days)"""
+        # v4: 优先用动态调整段
+        Y_idx = getattr(self, 'Y_idx', None)
+        if Y_idx is not None and Y_idx + 1 < len(self.df):
+            d = self.df.iloc[Y_idx + 1:]  # 动态调整段 [Y+1, T]
+        else:
+            d = self.df.tail(recent_days)  # fallback
         probe_mask = (
             (d['vol_ratio'] > 1.2) &
             (d['upper_shadow_pct'] > 0.03) &
@@ -426,20 +530,20 @@ class StockScorer:
     # ── 股票强度 (Stock Strength) ──
     def score_stock_strength(self, force_class=None):
         """衡量洗盘前的上涨强度：趋势+量能+回调+相对优势
+        v4: 使用动态 Y/L 划分上涨段和调整段，替代固定 45/15 窗口
         force_class: 若提供则跳过分类器, 强制使用 'trend'/'choppy' 参数集"""
         d = self.df
         n = len(d)
 
-        # 强度窗口：取前 N-15 天（后15天是现有洗盘窗口，不重叠）
-        strength_end = n - 15
-        if strength_end < 12:
-            return 0  # 数据不足 → 直接出局
+        # v4: 使用动态 Y/L 划分
+        Y_idx = getattr(self, 'Y_idx', n - 15)
+        L_idx = getattr(self, 'L_idx', 0)
 
-        strength = d.iloc[:strength_end].copy()
-        washout = d.iloc[strength_end:]
+        strength = d.iloc[L_idx : Y_idx + 1].copy()  # 上涨段 [L, Y]
+        washout = d.iloc[Y_idx + 1:]                  # 调整段 [Y+1, T]
 
         if len(strength) < 10:
-            return 0
+            return 0  # 上涨段太短 → 出局
 
         # === 趋势熔断（P1收紧：下跌直接归零） ===
         x = np.arange(len(strength))
@@ -805,11 +909,18 @@ class StockScorer:
 
     def trend_consistency(self):
         """P2：前期趋势 vs 近期调整的方向一致性校验
+        v4: 使用动态 Y/L 划分上涨段和调整段
         - 前期涨 + 近期回调 → 健康洗盘 (高分)
         - 前期跌 + 近期也跌 → 主跌浪 (0分)
         - 前期涨 + 近期也涨 → 没有洗盘 (低分)"""
-        strength = self.df.iloc[:-15] if len(self.df) > 15 else self.df
-        recent = self.df.tail(15)
+        Y_idx = getattr(self, 'Y_idx', None)
+        L_idx = getattr(self, 'L_idx', None)
+        if Y_idx is not None and L_idx is not None:
+            strength = self.df.iloc[L_idx : Y_idx + 1]  # 上涨段
+            recent = self.df.iloc[Y_idx + 1:]            # 调整段
+        else:
+            strength = self.df.iloc[:-15] if len(self.df) > 15 else self.df
+            recent = self.df.tail(15)
 
         if len(strength) < 5 or len(recent) < 3:
             return 50  # 数据不足，中性
@@ -858,11 +969,10 @@ class StockScorer:
         elif phase == 'decelerating':
             gate *= 0.75  # 减速段: 趋势在瓦解, 显著降权
 
-        # MA5 健康度校验: 用20点MA5斜率, 比5点稳健
-        n_total = len(self.df)
-        strength_end = n_total - 15
-        if strength_end >= 20:
-            s_closes = self.df.iloc[:strength_end]['close'].values
+        # MA5 健康度校验: 在上涨段上测 MA5 斜率，判断趋势是否仍健康
+        Y_idx = getattr(self, 'Y_idx', None)
+        if Y_idx is not None and Y_idx >= 20:
+            s_closes = self.df.iloc[:Y_idx + 1]['close'].values  # 上涨段 [L, Y]
             # 用最后20个MA5值做斜率 (而非5点, 避免噪声放大)
             ma5_series = np.array([s_closes[max(0,i-4):i+1].mean() for i in range(len(s_closes))])
             if len(ma5_series) >= 20:
@@ -884,7 +994,7 @@ class StockScorer:
             ma5_slope = 0
 
         # 背离折扣: 分类分<75 且 MA5<0 → 趋势质量存疑, gate额外打折
-        if class_score < 75 and strength_end >= 20 and ma5_slope < 0:
+        if class_score < 75 and Y_idx is not None and Y_idx >= 20 and ma5_slope < 0:
             gate *= 0.7  # 分类信心不足 + 短期向下 = 趋势可能破裂
 
         total = raw * gate * ma5_health
@@ -896,11 +1006,15 @@ class StockScorer:
         """震荡突破方向偏斜：不只是'会不会突破'，而是'往哪突破'。
         A股现实：横盘后向上突破和向下破位的概率不同，需要方向判断。
         返回 0-100 分数 (>50偏多, <50偏空)"""
-        n_total = len(self.df)
-        strength_end = n_total - 15
-        if strength_end < 10:
+        # v4: 用动态上涨段尾部（Y 前 20 天）
+        Y_idx = getattr(self, 'Y_idx', None)
+        L_idx = getattr(self, 'L_idx', None)
+        if Y_idx is not None and L_idx is not None:
+            strength = self.df.iloc[L_idx : Y_idx + 1]
+        else:
+            strength = self.df.iloc[:len(self.df) - 15]
+        if len(strength) < 10:
             return 50  # 数据不足, 中性
-        strength = self.df.iloc[:strength_end]
         d = strength.tail(20)
         if len(d) < 10:
             return 50
@@ -976,15 +1090,21 @@ class StockScorer:
                        'volume_price_health': vph, 'fund_flow': ff, 'volume_health': vh}
 
     def compute_total_score(self):
-        """总分合成 v3：趋势/震荡双引擎。
-        分类器定类 → 趋势引擎/震荡引擎 → 过渡区混合."""
+        """总分合成 v4：动态 Y/L 摆动点检测 + 趋势/震荡双引擎。
+        Y = 最近局部高点（之后无新高），L = 最近局部低点（之前无新低）
+        上涨段 [L, Y] → 强度评分，调整段 [Y, T] → 洗盘/试盘评分"""
 
-        # 1. 分类 (先于评分, 引擎需要知道类别)
-        n_total = len(self.df)
-        strength_end = n_total - 15
-        if strength_end >= 10:
-            strength = self.df.iloc[:strength_end]
+        # 0. 动态 Y/L 检测（替代固定 45/15 切分）
+        self.Y_idx, self.L_idx = self._find_swing_points()
+
+        # 1. 分类 — 用真正的上涨段 [L, Y]
+        strength = self.df.iloc[self.L_idx : self.Y_idx + 1]
+        if len(strength) >= 10:
             trend_class, class_score = self._classify_trend(strength)
+            # 上涨段太短 → 降级为 choppy
+            if len(strength) < 15:
+                class_score = min(class_score, 50)
+                trend_class = 'choppy'
             # 趋势生命周期检测 (用于趋势引擎 gate 调整)
             if trend_class == 'trend':
                 self._trend_phase, self._late_slope, self._early_slope = self._detect_trend_phase(strength)
@@ -1169,10 +1289,9 @@ def backfill_trend_class():
                 if df is None or len(df) < 10:
                     continue
                 scorer = StockScorer(df, index_returns=idx_returns)
-                n = len(scorer.df)
-                se = n - 15
-                if se >= 10:
-                    strength = scorer.df.iloc[:se]
+                Y_idx, L_idx = scorer._find_swing_points()
+                strength = scorer.df.iloc[L_idx : Y_idx + 1]
+                if len(strength) >= 10:
                     tc, tcs = scorer._classify_trend(strength)
                     conn.execute(
                         'UPDATE screening_history SET trend_class=?, trend_class_score=? WHERE target_date=? AND code=?',
