@@ -1311,12 +1311,20 @@ def backfill_trend_class():
 # 算法变更检测
 # ============================================================
 def get_algo_hash():
-    """计算 batch_screen.py 自身的 SHA256 哈希 (只对算法逻辑行, 跳过空行和纯注释行)"""
+    """计算评分逻辑部分的 SHA256 哈希 (跳过 CLI/流水线代码)。
+    以 '# 算法变更检测' 注释为界, 之前的是评分逻辑, 之后的是流水线。"""
     script_path = os.path.abspath(__file__)
     with open(script_path, 'rb') as f:
         content = f.read()
-    # 对完整内容取哈希, 任何修改都会触发重评
-    return hashlib.sha256(content).hexdigest()[:16]
+    # 只哈希评分逻辑部分: 从文件头到 '# 算法变更检测' 之前
+    text = content.decode('utf-8', errors='replace')
+    marker = '# 算法变更检测'
+    idx = text.find(marker)
+    if idx > 0:
+        scoring_part = text[:idx].encode('utf-8')
+    else:
+        scoring_part = content  # fallback: 整文件哈希
+    return hashlib.sha256(scoring_part).hexdigest()[:16]
 
 
 def store_algo_hash(conn, h):
