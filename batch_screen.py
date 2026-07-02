@@ -22,6 +22,12 @@ MIN_TURN = 2.0
 MIN_PRICE = 5.0
 # MAX_PRICE 已移除 — 不限制最高股价
 
+# ══════════════════════════════════════════════════════════════
+# 算法版本号: 修改评分公式后手动升级 → 自动触发全量重评
+#   V1 = 动态Y/L摆动点检测 + 趋势/震荡双引擎 (2026-07-02)
+# ══════════════════════════════════════════════════════════════
+ALGO_VERSION = "V1"
+
 # ============================================================
 # 辅助函数
 # ============================================================
@@ -1327,20 +1333,22 @@ def get_algo_hash():
     return hashlib.sha256(scoring_part).hexdigest()[:16]
 
 
-ALGO_HASH_KEY = 'algo_hash_v2'  # 版本化 key, 防止哈希格式变更时误判
+# 版本化 key: 版本号变化时旧 hash 找不到 → 自动触发重评
+def _hash_key():
+    return f'algo_{ALGO_VERSION}_hash'
 
 
 def store_algo_hash(conn, h):
     """将算法哈希存入 DB metadata 表"""
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
-    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (ALGO_HASH_KEY, h))
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (_hash_key(), h))
     conn.commit()
 
 
 def get_stored_algo_hash(conn):
-    """读取存储的算法哈希, 若不存在返回空。只读取当前版本 key。"""
+    """读取当前版本的存储哈希, 若不存在返回空"""
     try:
-        cur = conn.execute("SELECT value FROM meta WHERE key=?", (ALGO_HASH_KEY,))
+        cur = conn.execute("SELECT value FROM meta WHERE key=?", (_hash_key(),))
         row = cur.fetchone()
         return row[0] if row else None
     except Exception:
@@ -1348,26 +1356,15 @@ def get_stored_algo_hash(conn):
 
 
 def check_algo_changed():
-    """检查算法是否变更。返回 (changed: bool, current_hash: str)。
-    如果旧版本 key 存在而新版本 key 不存在 (哈希格式升级), 不触发变更。"""
+    """检查算法是否变更。版本号升级或评分逻辑改动都触发。
+    返回 (changed: bool, version: str, hash: str)"""
     current = get_algo_hash()
     conn = sqlite3.connect(DB_PATH)
     stored = get_stored_algo_hash(conn)
-    if stored is None:
-        # 检查是否有旧版本 hash (迁移场景: 不触发重评, 直接写入新 hash)
-        try:
-            cur = conn.execute("SELECT value FROM meta WHERE key='algo_hash'")
-            old_row = cur.fetchone()
-            if old_row:
-                print('[algo-hash] 从旧格式迁移, 不触发重评')
-                store_algo_hash(conn, current)
-                conn.close()
-                return False, current
-        except Exception:
-            pass
     conn.close()
-    changed = (stored is None) or (stored != current)
-    return changed, current
+    if stored is None:
+        return True, ALGO_VERSION, current
+    return (stored != current), ALGO_VERSION, current
 
 
 # ============================================================
@@ -1413,11 +1410,11 @@ def main():
 
     # ── 算法变更检测 (CI 前置检查) ──
     if args.check:
-        changed, h = check_algo_changed()
+        changed, ver, h = check_algo_changed()
         if changed:
-            print(f'CHANGED {h}')
+            print(f'CHANGED {ver} {h}')
         else:
-            print(f'UNCHANGED {h}')
+            print(f'UNCHANGED {ver} {h}')
         return
 
     # ── 回填模式：不评分, 仅分类 ──
@@ -1427,13 +1424,13 @@ def main():
 
     # ── 自动模式：检测算法是否变更 ──
     if args.auto:
-        changed, algo_hash = check_algo_changed()
+        changed, ver, algo_hash = check_algo_changed()
         if changed:
-            print(f'[auto] 算法已变更 (hash={algo_hash}), 触发全量重评')
+            print(f'[auto] 算法已变更 ({ver} hash={algo_hash}), 触发全量重评')
             args.rescore_all = True
             # 全量重评逻辑沿用下面已有的 rescore_all 分支
         else:
-            print(f'[auto] 算法未变更 (hash={algo_hash}), 仅处理新日期')
+            print(f'[auto] 算法未变更 ({ver} hash={algo_hash}), 仅处理新日期')
             args.latest = True
 
     # ── 确定待处理日期 ──
@@ -1441,14 +1438,17 @@ def main():
         conn_temp = sqlite3.connect(DB_PATH)
         cur = conn_temp.execute("SELECT DISTINCT target_date FROM screening_history ORDER BY target_date")
         old_dates = set(r[0] for r in cur)
+        # 在删除前获取真正的新日期 (而非所有未评分日期)
+        missing_before_delete = set(get_missing_dates())
         conn_temp.execute("DELETE FROM screening_history")
         conn_temp.commit()
         conn_temp.close()
-        # 合并新日期（stock_daily 中有但 screening_history 中没有的）
-        new_dates = set(get_missing_dates())
-        dates = sorted(old_dates | new_dates)
-        if new_dates:
-            print(f'全量重评: {len(old_dates)} 个旧日期 + {len(new_dates)} 个新日期 = {len(dates)} 个')
+        # 只合并比最新旧日期更新的 (排除远古未评分日期)
+        latest_old = max(old_dates) if old_dates else '0000-00-00'
+        fresh_dates = {d for d in missing_before_delete if d > latest_old}
+        dates = sorted(old_dates | fresh_dates)
+        if fresh_dates:
+            print(f'全量重评: {len(old_dates)} 个旧日期 + {len(fresh_dates)} 个新日期 = {len(dates)} 个')
         else:
             print(f'全量重评: {len(dates)} 个日期')
     elif args.rescore:
