@@ -1384,7 +1384,17 @@ def main():
     parser.add_argument('--rescore-all', action='store_true', help='Delete ALL screening_history and re-score every date from scratch')
     parser.add_argument('--backfill-class', action='store_true', help='Backfill trend_class for already-scored stocks (no re-score)')
     parser.add_argument('--auto', action='store_true', help='Auto-detect algo change: rescore-all if changed, else latest only')
+    parser.add_argument('--check', action='store_true', help='Check if algo has changed (CI pre-check, outputs CHANGED/UNCHANGED)')
     args = parser.parse_args()
+
+    # ── 算法变更检测 (CI 前置检查) ──
+    if args.check:
+        changed, h = check_algo_changed()
+        if changed:
+            print(f'CHANGED {h}')
+        else:
+            print(f'UNCHANGED {h}')
+        return
 
     # ── 回填模式：不评分, 仅分类 ──
     if args.backfill_class:

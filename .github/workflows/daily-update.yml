@@ -64,23 +64,39 @@ jobs:
             echo "[cache] Using cached database"
           fi
 
-      # ── 增量拉取 + 完整性检查 + 自动重试 ──
-      # fetch_with_retry 内部已含回填逻辑，无需单独 backfill
-      - name: Fetch latest data with completeness check
+      # ── 前置检测：算法是否变更（决定是否跳过数据拉取）──
+      - name: Check if algorithm has changed
+        id: algo-check
+        run: |
+          result=$(python batch_screen.py --check)
+          echo "check_result=$result"
+          if echo "$result" | grep -q 'CHANGED'; then
+            echo "algo_changed=true" >> $GITHUB_OUTPUT
+            echo "[algo-check] Algorithm CHANGED — will skip data fetch, run rescore-all"
+          else
+            echo "algo_changed=false" >> $GITHUB_OUTPUT
+            echo "[algo-check] Algorithm unchanged — normal update"
+          fi
+
+      # ── 增量拉取：仅在算法未变更时执行 ──
+      - name: Fetch latest data
+        if: steps.algo-check.outputs.algo_changed == 'false' && github.event.inputs.rescore_all != 'true'
         run: |
           python -u -c "
           from data_fetcher import fetch_with_retry
           fetch_with_retry(max_attempts=2, wait_minutes=10)
           "
 
-      - name: Run screening (auto-detect algo change)
+      # ── 评分：算法变更 → 全量重评 | 否则 → 增量 ──
+      - name: Run screening
         run: |
-          if [ "${{ github.event.inputs.rescore_all }}" == "true" ]; then
+          if [ "${{ github.event.inputs.rescore_all }}" == "true" ] || [ "${{ steps.algo-check.outputs.algo_changed }}" == "true" ]; then
+            echo "[screening] Full rescore-all"
             python batch_screen.py --rescore-all
           elif [ -n "${{ github.event.inputs.date }}" ]; then
             python batch_screen.py --date ${{ github.event.inputs.date }}
           else
-            python batch_screen.py --auto
+            python batch_screen.py --latest
           fi
 
       - name: Slim database (drop unused tables + keep 90 days)
