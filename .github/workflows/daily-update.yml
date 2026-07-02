@@ -73,21 +73,15 @@ jobs:
           fetch_with_retry(max_attempts=2, wait_minutes=10)
           "
 
-      - name: Run screening for new dates
+      - name: Run screening (auto-detect algo change)
         run: |
           if [ "${{ github.event.inputs.rescore_all }}" == "true" ]; then
             python batch_screen.py --rescore-all
           elif [ -n "${{ github.event.inputs.date }}" ]; then
             python batch_screen.py --date ${{ github.event.inputs.date }}
           else
-            python batch_screen.py --latest
+            python batch_screen.py --auto
           fi
-
-      - name: Re-score dates with NaN values (one-time fix)
-        run: python batch_screen.py --rescore-nan
-
-      - name: Backfill trend_class for already-scored stocks
-        run: python batch_screen.py --backfill-class
 
       - name: Slim database (drop unused tables + keep 90 days)
         run: python slim_db.py

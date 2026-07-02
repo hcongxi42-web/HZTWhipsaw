@@ -127,7 +127,7 @@ def main():
                    stock_strength, launch_readiness, volume_price_health,
                    latest_close, latest_pctChg, is_limit_up_today,
                    recent_limit_days, probe_count, days_since_probe,
-                   trend_class
+                   trend_class, trend_class_score
             FROM screening_history
             WHERE target_date = ?
             ORDER BY rank
@@ -157,6 +157,7 @@ def main():
                 'days_since_probe': int(row['days_since_probe']),
                 'concept': concept,
                 'trend_class': row.get('trend_class') or None,
+                'trend_class_score': safe_round(row.get('trend_class_score', 0) or 0, 0),
             })
 
         with open(os.path.join(DATA_DIR, f'{date}.json'), 'w', encoding='utf-8') as f:
@@ -190,7 +191,8 @@ def main():
     for i, code in enumerate(all_codes):
         df = pd.read_sql_query("""
             SELECT target_date, rank, total, washout_quality, probe_test, ma_convergence,
-                   stock_strength, launch_readiness, volume_price_health
+                   stock_strength, launch_readiness, volume_price_health,
+                   trend_class, trend_class_score
             FROM screening_history WHERE code = ? ORDER BY target_date
         """, conn, params=(code,))
 
@@ -205,6 +207,8 @@ def main():
                 'stock_strength': safe_round(row.get('stock_strength', 0) or 0, 1),
                 'launch_readiness': safe_round(row['launch_readiness'], 1),
                 'volume_price_health': safe_round(row.get('volume_price_health', 0) or 0, 1),
+                'trend_class': row.get('trend_class') or None,
+                'trend_class_score': safe_round(row.get('trend_class_score', 0) or 0, 0),
             }
             for _, row in df.iterrows()
         ]

@@ -4,7 +4,7 @@
 对多个目标日期分别运行完整筛选流程，结果存入 screening_history 表。
 从 stock_screener.py 提取核心逻辑，参数化 TARGET_DATE。
 """
-import sys, io, os
+import sys, io, os, hashlib
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 
 import os
@@ -1308,6 +1308,45 @@ def backfill_trend_class():
 
 
 # ============================================================
+# 算法变更检测
+# ============================================================
+def get_algo_hash():
+    """计算 batch_screen.py 自身的 SHA256 哈希 (只对算法逻辑行, 跳过空行和纯注释行)"""
+    script_path = os.path.abspath(__file__)
+    with open(script_path, 'rb') as f:
+        content = f.read()
+    # 对完整内容取哈希, 任何修改都会触发重评
+    return hashlib.sha256(content).hexdigest()[:16]
+
+
+def store_algo_hash(conn, h):
+    """将算法哈希存入 DB metadata 表"""
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
+    conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('algo_hash', ?)", (h,))
+    conn.commit()
+
+
+def get_stored_algo_hash(conn):
+    """读取存储的算法哈希, 若不存在返回空"""
+    try:
+        cur = conn.execute("SELECT value FROM meta WHERE key='algo_hash'")
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception:
+        return None
+
+
+def check_algo_changed():
+    """检查算法是否变更。返回 (changed: bool, current_hash: str)"""
+    current = get_algo_hash()
+    conn = sqlite3.connect(DB_PATH)
+    stored = get_stored_algo_hash(conn)
+    conn.close()
+    changed = (stored is None) or (stored != current)
+    return changed, current
+
+
+# ============================================================
 # 批量主流程
 # ============================================================
 def get_missing_dates(min_stocks=1000):
@@ -1344,12 +1383,24 @@ def main():
     parser.add_argument('--rescore-nan', action='store_true', help='Re-score dates that have NaN in stock_strength or volume_price_health')
     parser.add_argument('--rescore-all', action='store_true', help='Delete ALL screening_history and re-score every date from scratch')
     parser.add_argument('--backfill-class', action='store_true', help='Backfill trend_class for already-scored stocks (no re-score)')
+    parser.add_argument('--auto', action='store_true', help='Auto-detect algo change: rescore-all if changed, else latest only')
     args = parser.parse_args()
 
     # ── 回填模式：不评分, 仅分类 ──
     if args.backfill_class:
         backfill_trend_class()
         return
+
+    # ── 自动模式：检测算法是否变更 ──
+    if args.auto:
+        changed, algo_hash = check_algo_changed()
+        if changed:
+            print(f'[auto] 算法已变更 (hash={algo_hash}), 触发全量重评')
+            args.rescore_all = True
+            # 全量重评逻辑沿用下面已有的 rescore_all 分支
+        else:
+            print(f'[auto] 算法未变更 (hash={algo_hash}), 仅处理新日期')
+            args.latest = True
 
     # ── 确定待处理日期 ──
     if args.rescore_all:
@@ -1360,6 +1411,9 @@ def main():
         conn_temp.commit()
         conn_temp.close()
         dates = all_dates
+        # 如果 screening_history 为空（首次运行），回退到取所有可用日期
+        if not dates:
+            dates = get_missing_dates()
         print(f'全量重评: 已清空 screening_history, 共 {len(dates)} 个日期: {dates}')
     elif args.rescore:
         dates = [d.strip() for d in args.rescore.split(',') if d.strip()]
@@ -1450,6 +1504,11 @@ def main():
             print(f"  ✗ 错误: {e}")
             import traceback
             traceback.print_exc()
+
+    # 评分完成后存储算法哈希 (用于下次 --auto 检测)
+    if (args.auto or args.rescore_all or args.latest) and len(all_results) > 0:
+        store_algo_hash(conn, get_algo_hash())
+        print(f'  ✓ 已更新算法哈希')
 
     conn.close()
 
