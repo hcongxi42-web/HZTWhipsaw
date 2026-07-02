@@ -28,6 +28,9 @@ Thumbs.db
 # Flask web (deployed as static site via docs/)
 web/
 
+# Generated static data (only CI force-adds with git add -f)
+docs/data/
+
 # Temporary
 *.tmp
 *.temp
