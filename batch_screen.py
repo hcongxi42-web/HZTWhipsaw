@@ -25,8 +25,9 @@ MIN_PRICE = 5.0
 # ══════════════════════════════════════════════════════════════
 # 算法版本号: 修改评分公式后手动升级 → 自动触发全量重评
 #   V1 = 动态Y/L摆动点检测 + 趋势/震荡双引擎 (2026-07-02)
+#   V2 = L窗口放宽 + 下影线替代试盘后走势 + Y/L双重验证 (2026-07-04)
 # ══════════════════════════════════════════════════════════════
-ALGO_VERSION = "V1"
+ALGO_VERSION = "V2"
 
 # ============================================================
 # 辅助函数
@@ -165,12 +166,13 @@ class StockScorer:
         self.limit_pct = limit_pct
 
     # ── 动态 Y/L 摆动点检测 ──
-    def _find_swing_points(self, M=6):
+    def _find_swing_points(self, M=6, L_lookback=45):
         """找到真正的局部高 Y 和局部低 L，自适应划分上涨段/调整段。
 
         算法：
           Y: 从 T-1 向前找第一个局部高点（M 日窗口），且之后到 T-1 无更高收盘价
-          L: 从 Y-1 向前找第一个局部低点（M 日窗口），且之前到数据起点无更低收盘价
+          L: 从 Y-1 向前找第一个局部低点（M 日窗口），且在其前 L_lookback 天内无更低收盘价
+             (默认45天≈2个月, 避免一年前的历史低点被当成当前上涨段的起点)
 
         自适应 M: 高波动率 → 加大 M 滤噪，低波动率 → 减小 M 避免漏信号
         递归降级: M 找不到 → M-2 重试，最小到 2
@@ -196,9 +198,11 @@ class StockScorer:
             M = max(M - 2, 3)    # 低波动 → 小窗口不丢信号
 
         def _is_local_max(i, m):
-            if i < m or i + m >= n:
+            # 左边界必须完整; 右边界允许不足 (由条件2 "之后无更高" 兜底)
+            if i < m:
                 return False
-            w = closes[i-m:i+m+1]
+            r = min(n, i + m + 1)
+            w = closes[i-m:r]
             mx = w.max()
             return closes[i] == mx and list(w).count(mx) == 1
 
@@ -221,38 +225,57 @@ class StockScorer:
                         break
             cur_M -= 2
 
-        # 兜底：用 [0, T-1] 区间最高点
+        # 兜底：用 [0, T-1] 区间最高点 (但要满足"之后无更高")
         if Y_idx is None:
             Y_idx = int(np.argmax(closes[:-1])) if n > 1 else n - 2
 
-        # 确保最小调整段长度（至少 5 天）
-        if Y_idx > n - 6:
-            Y_idx = n - 6
-        Y_idx = max(5, Y_idx)  # 最前留 5 天给上涨段
+        # ── Y 最终验证：之后到 T-1 无更高收盘价 ──
+        after_max = closes[Y_idx+1:].max()
+        if closes[Y_idx] < after_max:
+            # Y 被后面的高点超越, 把 Y 推到那个高点
+            offset = int(np.argmax(closes[Y_idx+1:])) + 1
+            Y_idx = Y_idx + offset
+            # 再次检查最小调整段
+            if Y_idx > n - 3:
+                Y_idx = n - 3  # 至少留2天调整段
 
-        # ── 找 L：最近局部低点，之前无新低 ──
+        # 软约束：调整段至少留 1 天, 上涨段至少留 2 天
+        if Y_idx >= n - 1:
+            Y_idx = n - 2  # 调整段为0才修正
+        if Y_idx < 2:
+            Y_idx = 2      # 上涨段为0才修正
+
+        # ── 找 L：Y 之前最近的局部低点 ──
+        # 只要求 M-window 局部最低, 不要求全局/窗口最低 (否则长牛股 L 会被拖到远古低点)
         L_idx = None
         cur_M = M
         while L_idx is None and cur_M >= 2:
             for i in range(Y_idx - 1, cur_M - 1, -1):
                 if _is_local_min(i, cur_M):
-                    # 条件2：之前到数据起点无更低收盘价
-                    if closes[i] <= closes[:i].min():
-                        L_idx = i
-                        break
+                    L_idx = i
+                    break
             cur_M -= 2
 
-        # 兜底：用 [0, Y-1] 区间最低点
+        # 兜底：用 Y 之前 L_lookback 窗口内最低点
         if L_idx is None:
-            L_idx = int(np.argmin(closes[:Y_idx]))
+            lb = max(0, Y_idx - L_lookback)
+            L_idx = int(lb + np.argmin(closes[lb:Y_idx]))
 
-        # 确保最小上涨段长度（至少 12 天）
+        # 确保最小上涨段长度（至少 12 天），但爆发式行情放宽
         min_up_len = 12
         if Y_idx - L_idx < min_up_len:
-            search_start = max(0, Y_idx - 30)
-            L_idx = int(search_start + np.argmin(closes[search_start:Y_idx]))
-            if Y_idx - L_idx < min_up_len:
-                L_idx = max(0, Y_idx - min_up_len)
+            up_gain = closes[Y_idx] / closes[L_idx] - 1
+            if up_gain < 0.25:  # 涨幅不足25%才补天数, 爆发式行情(>25%)保持原L
+                search_start = max(0, Y_idx - 30)
+                L_idx = int(search_start + np.argmin(closes[search_start:Y_idx]))
+                if Y_idx - L_idx < min_up_len:
+                    L_idx = max(0, Y_idx - min_up_len)
+
+        # ── 最终验证：L 必须是 [L, Y] 区间内的最低点 (最后一步) ──
+        seg = closes[L_idx : Y_idx + 1]
+        true_min_offset = int(np.argmin(seg))
+        if true_min_offset > 0:
+            L_idx = L_idx + true_min_offset
 
         return Y_idx, L_idx
 
@@ -308,7 +331,7 @@ class StockScorer:
         return shrink_score * 0.40 + shrink_pct_score * 0.35 + dd_score * 0.25
 
     def score_probe_test(self, recent_days=15):
-        """试盘信号: 上影线30% + 量能25% + 试盘后走势35% + 频率加成10% (全连续)
+        """试盘信号: 上影线30% + 量能25% + 下影线质量35% + 频率加成10% (全连续)
         v4: 使用动态调整段 [Y, T]，无动态划分时退回到 tail(recent_days)"""
         # v4: 优先用动态调整段
         Y_idx = getattr(self, 'Y_idx', None)
@@ -346,20 +369,12 @@ class StockScorer:
         else:
             vol_score = max(10, 30 - (vr - 3.5) * 10)
 
-        # 试盘后走势 (35%): bell(收益, 1.5%中心) + sigmoid(量比, 越低越好)
-        probe_idx = probe_days.index[-1]
-        after_probe = d.loc[probe_idx:]
-        if len(after_probe) >= 2:
-            after_ret = after_probe['close'].iloc[-1] / after_probe['close'].iloc[0] - 1
-            after_vol = after_probe['vol_ratio'].iloc[1:].mean() if len(after_probe) > 1 else 1.0
-            ret_quality = self._bell(after_ret, 0.015, 0.04)
-            vol_quality = self._sigmoid(after_vol, 0.85, -6.0)
-            follow_score = ret_quality * 0.55 + vol_quality * 0.45
-        else:
-            follow_score = 50
+        # 下影线质量 (35%): bell(下影线占比, 中心5%) — 锤子线形态, 有支撑信号
+        low_shadow = (min(latest['open'], latest['close']) - latest['low']) / latest['preclose']
+        low_shadow_score = self._bell(low_shadow * 100, 5.0, 3.0)  # 最优5%, sigma=3%
 
         freq_bonus = min(15, (len(probe_days) - 1) * 8)
-        return min(100, shadow_score * 0.30 + vol_score * 0.25 + follow_score * 0.35 + freq_bonus)
+        return min(100, shadow_score * 0.30 + vol_score * 0.25 + low_shadow_score * 0.35 + freq_bonus)
 
     def score_launch_readiness(self, recent_days=5):
         """启动准备: 质量阳线55% + 均线配合15% + 稳定性10% + 信号新鲜度20% (涨停不惩罚)"""
