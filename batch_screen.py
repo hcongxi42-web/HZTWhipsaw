@@ -26,8 +26,9 @@ MIN_PRICE = 5.0
 # 算法版本号: 修改评分公式后手动升级 → 自动触发全量重评
 #   V1 = 动态Y/L摆动点检测 + 趋势/震荡双引擎 (2026-07-02)
 #   V2 = L窗口放宽 + 下影线替代试盘后走势 + Y/L双重验证 (2026-07-04)
+#   V3 = 下跌趋势检测(T<L惩罚) + 短爆发豁免强度熔断 + 短爆发分类豁免 (2026-07-04)
 # ══════════════════════════════════════════════════════════════
-ALGO_VERSION = "V2"
+ALGO_VERSION = "V3"
 
 # ============================================================
 # 辅助函数
@@ -276,6 +277,17 @@ class StockScorer:
         true_min_offset = int(np.argmin(seg))
         if true_min_offset > 0:
             L_idx = L_idx + true_min_offset
+
+        # ── 下跌趋势检测: T < L → 涨的全跌回去了 ──
+        if closes[-1] < closes[L_idx]:
+            # 在 [L, T] 区间内找真正最低点
+            full_seg = closes[L_idx:]
+            fallback_min = int(np.argmin(full_seg))
+            new_L = L_idx + fallback_min
+            # 只有新低在 Y 之前才接受 (说明反弹是从更低点开始的)
+            # 如果新低在 Y 之后, 保留原 L (反弹虽失败, 但 L 是反弹起点)
+            if new_L < Y_idx:
+                L_idx = new_L
 
         return Y_idx, L_idx
 
@@ -563,8 +575,11 @@ class StockScorer:
         strength = d.iloc[L_idx : Y_idx + 1].copy()  # 上涨段 [L, Y]
         washout = d.iloc[Y_idx + 1:]                  # 调整段 [Y+1, T]
 
+        # 上涨段太短 → 但爆发式行情(≥25%)豁免
         if len(strength) < 10:
-            return 0  # 上涨段太短 → 出局
+            up_gain = strength['close'].iloc[-1] / strength['close'].iloc[0] - 1
+            if up_gain < 0.25:
+                return 0
 
         # === 趋势熔断（P1收紧：下跌直接归零） ===
         x = np.arange(len(strength))
@@ -609,6 +624,14 @@ class StockScorer:
         relative_score = self._strength_relative(strength)
 
         raw = trend_score * 0.35 + volume_score * 0.25 + pullback_score * 0.25 + relative_score * 0.15
+
+        # ── 趋势失效惩罚: T < L → 涨的全跌回去了, 上涨段被否定 ──
+        if d['close'].iloc[-1] < strength['close'].iloc[0]:
+            # 跌破起涨点幅度越大惩罚越重: 跌1%→×0.7, 跌10%→×0.3
+            breach = (strength['close'].iloc[0] / d['close'].iloc[-1] - 1)  # 跌破幅度
+            penalty = max(0.2, 1.0 - breach * 7)  # 跌破10% → ×0.3, 跌破15% → ×0.0
+            raw *= penalty
+
         return max(0, min(100, np.nan_to_num(raw, nan=0.0)))
 
     def _strength_trend(self, strength, trend_class='choppy'):
@@ -1120,6 +1143,7 @@ class StockScorer:
 
         # 1. 分类 — 用真正的上涨段 [L, Y]
         strength = self.df.iloc[self.L_idx : self.Y_idx + 1]
+        up_gain = strength['close'].iloc[-1] / strength['close'].iloc[0] - 1
         if len(strength) >= 10:
             trend_class, class_score = self._classify_trend(strength)
             # 上涨段太短 → 降级为 choppy
@@ -1131,6 +1155,9 @@ class StockScorer:
                 self._trend_phase, self._late_slope, self._early_slope = self._detect_trend_phase(strength)
             else:
                 self._trend_phase = 'steady'
+        elif up_gain >= 0.25:
+            # 爆发式短行情: 涨幅≥25% 给中等分类分, 走混合引擎
+            trend_class, class_score = 'choppy', 50
         else:
             trend_class, class_score = 'choppy', 0
 
