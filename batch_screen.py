@@ -17,18 +17,74 @@ import warnings
 warnings.filterwarnings('ignore')
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'stock_data.db')
-LOOKBACK_DAYS = 60  # 股票强度需要更长回溯(前45天+近15天)
-MIN_TURN = 2.0
-MIN_PRICE = 5.0
-# MAX_PRICE 已移除 — 不限制最高股价
 
 # ══════════════════════════════════════════════════════════════
 # 算法版本号: 修改评分公式后手动升级 → 自动触发全量重评
 #   V1 = 动态Y/L摆动点检测 + 趋势/震荡双引擎 (2026-07-02)
 #   V2 = L窗口放宽 + 下影线替代试盘后走势 + Y/L双重验证 (2026-07-04)
 #   V3 = 下跌趋势检测(T<L惩罚) + 短爆发豁免强度熔断 + 短爆发分类豁免 (2026-07-04)
+#   V4 = 模糊门控(tanh) + swing_confidence + 参数集中规范化 (2026-07-05)
 # ══════════════════════════════════════════════════════════════
-ALGO_VERSION = "V3"
+ALGO_VERSION = "V4"
+
+# ══════════════════════════════════════════════════════════════
+# 数据筛选参数
+# ══════════════════════════════════════════════════════════════
+LOOKBACK_DAYS = 60     # 回溯窗口: 评分需要60天历史日线
+MIN_TURN = 2.0         # [来源: A股日均换手率中位数≈2%] 最低日均换手率, 过滤僵尸股
+MIN_PRICE = 5.0        # [来源: A股最低交易单位约束] 最低股价, 过滤仙股
+
+# ══════════════════════════════════════════════════════════════
+# 摆动点检测参数 (_find_swing_points)
+# ══════════════════════════════════════════════════════════════
+SWING_M = 6            # [来源: 经验值 ≈ 一周半交易日] 默认M窗口, 自适应±2
+SWING_L_LOOKBACK = 45  # [来源: ≈2个月交易日] L兜底搜索窗口
+SWING_MIN_UP_LEN = 12  # [来源: 行为金融最小趋势确认周期] 最小上涨段天数
+SWING_BURST_GAIN = 0.25  # [来源: A股短线爆发阈值≈25%] 涨幅超过此值豁免最小上涨段限制
+
+# ══════════════════════════════════════════════════════════════
+# 趋势/震荡分类参数 (_classify_trend)
+# ══════════════════════════════════════════════════════════════
+CLASSIFY_MIN_LEN = 15   # 最小上涨段长度, 低于此降级为choppy
+CLASSIFY_THRESHOLD = 55 # [来源: tanh门控中心点] 趋势/震荡分界线
+
+# ══════════════════════════════════════════════════════════════
+# 模糊门控参数 (compute_total_score)
+# ══════════════════════════════════════════════════════════════
+GATING_CENTER = 55.0    # tanh门控中心: class_score=55时趋势/震荡各50%
+GATING_HALF_WIDTH = 4.0 # tanh半宽: class_score=51~59为过渡区
+
+# ══════════════════════════════════════════════════════════════
+# swing_confidence 参数
+# ══════════════════════════════════════════════════════════════
+SWING_CONF_DAYS = 10    # [来源: 两周交易日≈行为金融确认周期] Y之后需这么多天才满置信
+
+# ══════════════════════════════════════════════════════════════
+# 强度评分熔断阈值 (score_stock_strength)
+# ══════════════════════════════════════════════════════════════
+STRENGTH_MIN_BARS = 10  # [来源: OLS回归最小样本量] 上涨段最少K线数
+STRENGTH_MELTDOWN_SLOPE = -5  # [来源: 年化<-5%=明确下跌] 硬闸1: 下跌趋势直接出局
+STRENGTH_FLAT_SLOPE = 3      # [来源: 年化<3%=横盘] 硬闸3: 横盘+R²低=随机游走
+STRENGTH_FLAT_R2 = 0.30      # [来源: R²<0.3在金融时间序列中属噪声] 硬闸3阈值
+
+# ══════════════════════════════════════════════════════════════
+# T<L 趋势失效惩罚 (score_stock_strength)
+# ══════════════════════════════════════════════════════════════
+BREACH_PENALTY_MULT = 7.0  # [来源: 校准于sz.300217/sz.301456案例] 跌破幅度乘数, 越大惩罚越重
+BREACH_PENALTY_FLOOR = 0.2 # 惩罚下限: 防止完全归零(留信号)
+
+# ══════════════════════════════════════════════════════════════
+# 趋势/震荡引擎权重
+# [来源: 经济逻辑先验 — 趋势引擎重强度+洗盘, 震荡引擎重均粘+试盘]
+# ══════════════════════════════════════════════════════════════
+TREND_WEIGHTS = {       # 趋势引擎: 强度主导
+    'stock_strength': 0.35, 'washout': 0.25, 'vol_price_health': 0.20,
+    'launch': 0.10, 'probe': 0.05, 'ma_conv': 0.05
+}
+CHOPPY_WEIGHTS = {      # 震荡引擎: 均粘+试盘主导
+    'ma_conv': 0.25, 'probe': 0.22, 'washout': 0.22,
+    'vol_price_health': 0.13, 'launch': 0.13, 'stock_strength': 0.05
+}
 
 # ============================================================
 # 辅助函数
@@ -167,7 +223,7 @@ class StockScorer:
         self.limit_pct = limit_pct
 
     # ── 动态 Y/L 摆动点检测 ──
-    def _find_swing_points(self, M=6, L_lookback=45):
+    def _find_swing_points(self, M=None, L_lookback=None):
         """找到真正的局部高 Y 和局部低 L，自适应划分上涨段/调整段。
 
         算法：
@@ -181,6 +237,8 @@ class StockScorer:
 
         返回 (Y_idx, L_idx)，索引从0起
         """
+        if M is None: M = SWING_M
+        if L_lookback is None: L_lookback = SWING_L_LOOKBACK
         closes = self.df['close'].values
         n = len(closes)
         if n < 20:
@@ -263,10 +321,10 @@ class StockScorer:
             L_idx = int(lb + np.argmin(closes[lb:Y_idx]))
 
         # 确保最小上涨段长度（至少 12 天），但爆发式行情放宽
-        min_up_len = 12
+        min_up_len = SWING_MIN_UP_LEN
         if Y_idx - L_idx < min_up_len:
             up_gain = closes[Y_idx] / closes[L_idx] - 1
-            if up_gain < 0.25:  # 涨幅不足25%才补天数, 爆发式行情(>25%)保持原L
+            if up_gain < SWING_BURST_GAIN:  # 涨幅不足25%才补天数, 爆发式行情(>25%)保持原L
                 search_start = max(0, Y_idx - 30)
                 L_idx = int(search_start + np.argmin(closes[search_start:Y_idx]))
                 if Y_idx - L_idx < min_up_len:
@@ -576,9 +634,9 @@ class StockScorer:
         washout = d.iloc[Y_idx + 1:]                  # 调整段 [Y+1, T]
 
         # 上涨段太短 → 但爆发式行情(≥25%)豁免
-        if len(strength) < 10:
+        if len(strength) < STRENGTH_MIN_BARS:
             up_gain = strength['close'].iloc[-1] / strength['close'].iloc[0] - 1
-            if up_gain < 0.25:
+            if up_gain < SWING_BURST_GAIN:
                 return 0
 
         # === 趋势熔断（P1收紧：下跌直接归零） ===
@@ -589,7 +647,7 @@ class StockScorer:
         annual_slope = slope * 250 * 100  # 年化%
 
         # 硬闸1：明显下跌趋势 → 直接出局
-        if annual_slope < -5:
+        if annual_slope < STRENGTH_MELTDOWN_SLOPE:
             return 0
 
         # 硬闸2：微跌或零增长 → 几乎出局
@@ -598,7 +656,7 @@ class StockScorer:
 
         # 硬闸3：横盘无趋势 + R²极低 = 随机游走
         r2 = r_value ** 2
-        if annual_slope < 3 and r2 < 0.30:
+        if annual_slope < STRENGTH_FLAT_SLOPE and r2 < STRENGTH_FLAT_R2:
             return 5
 
         # ★ 趋势/震荡分类 (在子函数调用前, 使各因子感知类别)
@@ -627,9 +685,9 @@ class StockScorer:
 
         # ── 趋势失效惩罚: T < L → 涨的全跌回去了, 上涨段被否定 ──
         if d['close'].iloc[-1] < strength['close'].iloc[0]:
-            # 跌破起涨点幅度越大惩罚越重: 跌1%→×0.7, 跌10%→×0.3
-            breach = (strength['close'].iloc[0] / d['close'].iloc[-1] - 1)  # 跌破幅度
-            penalty = max(0.2, 1.0 - breach * 7)  # 跌破10% → ×0.3, 跌破15% → ×0.0
+            # 跌破起涨点幅度越大惩罚越重
+            breach = (strength['close'].iloc[0] / d['close'].iloc[-1] - 1)
+            penalty = max(BREACH_PENALTY_FLOOR, 1.0 - breach * BREACH_PENALTY_MULT)
             raw *= penalty
 
         return max(0, min(100, np.nan_to_num(raw, nan=0.0)))
@@ -1001,7 +1059,9 @@ class StockScorer:
         vh = self.score_volume_health()
 
         # 趋势股权重: 强度+回调质量为核心, 试盘信号降权(趋势不靠试盘)
-        raw = ss*0.35 + wo*0.25 + vph*0.20 + lr*0.10 + pt*0.05 + mc*0.05
+        w = TREND_WEIGHTS
+        raw = (ss*w['stock_strength'] + wo*w['washout'] + vph*w['vol_price_health']
+               + lr*w['launch'] + pt*w['probe'] + mc*w['ma_conv'])
 
         # 趋势门控: 强度中心降到30
         gate = 1.0 / (1.0 + math.exp(-0.15 * (ss - 30)))
@@ -1112,7 +1172,9 @@ class StockScorer:
         vh = self.score_volume_health()
 
         # 震荡股权重: 收敛+试盘是核心, 强度降到最低(没趋势是正常的)
-        raw = mc*0.25 + pt*0.22 + wo*0.22 + vph*0.13 + lr*0.13 + ss*0.05
+        w = CHOPPY_WEIGHTS
+        raw = (mc*w['ma_conv'] + pt*w['probe'] + wo*w['washout']
+               + vph*w['vol_price_health'] + lr*w['launch'] + ss*w['stock_strength'])
 
         # 震荡门控: 用均线粘合度×试盘信号 代替 strength gate
         # 两者都低 → '没收敛也没人试, 凭什么突破' → gate压制
@@ -1144,7 +1206,7 @@ class StockScorer:
         # 1. 分类 — 用真正的上涨段 [L, Y]
         strength = self.df.iloc[self.L_idx : self.Y_idx + 1]
         up_gain = strength['close'].iloc[-1] / strength['close'].iloc[0] - 1
-        if len(strength) >= 10:
+        if len(strength) >= STRENGTH_MIN_BARS:
             trend_class, class_score = self._classify_trend(strength)
             # 上涨段太短 → 降级为 choppy
             if len(strength) < 15:
@@ -1155,7 +1217,7 @@ class StockScorer:
                 self._trend_phase, self._late_slope, self._early_slope = self._detect_trend_phase(strength)
             else:
                 self._trend_phase = 'steady'
-        elif up_gain >= 0.25:
+        elif up_gain >= SWING_BURST_GAIN:
             # 爆发式短行情: 涨幅≥25% 给中等分类分, 走混合引擎
             trend_class, class_score = 'choppy', 50
         else:
@@ -1172,29 +1234,44 @@ class StockScorer:
             }
             return self.scores
 
-        # 3. 路由到引擎
-        if class_score >= 60:
-            total, dims = self._compute_trend_total(stock_strength, class_score)
-        elif class_score <= 50:
-            total, dims = self._compute_choppy_total(stock_strength)
+        # 3. 模糊门控: tanh 平滑过渡 (center=55, width=8)
+        z = (class_score - GATING_CENTER) / GATING_HALF_WIDTH
+        tw = 0.5 * (1 + np.tanh(z))     # trend weight [0,1]
+        cw = 1.0 - tw                    # choppy weight [0,1]
+
+        # 两个引擎各算一次, 按模糊权重混合
+        # 过渡区(50-60)需要两次强度计算, 极端区用原分类强度近似
+        if 0.15 < tw < 0.85:
+            # 过渡区: 分别计算两种强度, 完整混合
+            t_ss = self.score_stock_strength(force_class='trend') if tw > 0.3 else stock_strength
+            c_ss = self.score_stock_strength(force_class='choppy') if cw > 0.3 else stock_strength
+            t_total, t_dims = self._compute_trend_total(t_ss, class_score)
+            c_total, c_dims = self._compute_choppy_total(c_ss)
+        elif tw >= 0.85:
+            # 强趋势区: 趋势引擎为主, 震荡引擎用同强度(仅做加权参考)
+            t_total, t_dims = self._compute_trend_total(stock_strength, class_score)
+            c_total, c_dims = self._compute_choppy_total(stock_strength)
         else:
-            # 过渡区: 两个引擎各算一次, 按 class_score 混合
-            t_total, t_dims = self._compute_trend_total(
-                self.score_stock_strength(force_class='trend'), class_score)
-            c_total, c_dims = self._compute_choppy_total(
-                self.score_stock_strength(force_class='choppy'))
-            blend = class_score / 100.0
-            total = t_total * blend + c_total * (1 - blend)
-            dims = {}
-            for k in t_dims:
-                dims[k] = round(t_dims[k] * blend + c_dims.get(k, 0) * (1 - blend), 1)
-            dims['stock_strength'] = stock_strength  # 保留原分类的强度
+            # 强震荡区: 震荡引擎为主, 趋势引擎用同强度
+            t_total, t_dims = self._compute_trend_total(stock_strength, class_score)
+            c_total, c_dims = self._compute_choppy_total(stock_strength)
+
+        total = round(t_total * tw + c_total * cw, 1)
+        dims = {}
+        for k in t_dims:
+            dims[k] = round(t_dims[k] * tw + c_dims.get(k, 0) * cw, 1)
+        dims['stock_strength'] = stock_strength  # 保留原分类的强度
+
+        # swing_confidence: Y 点确认度 (调整段越长越稳固, 0-1)
+        adj_len = len(self.df) - 1 - self.Y_idx
+        swing_conf = round(min(1.0, adj_len / SWING_CONF_DAYS), 2)
 
         self.scores = {
             **dims,
-            'total': round(total, 1),
+            'total': total,
             'trend_class': trend_class,
             'trend_class_score': class_score,
+            'swing_confidence': swing_conf,
         }
         return self.scores
 
@@ -1554,10 +1631,12 @@ def main():
          recent_limit_days INTEGER, probe_count INTEGER, days_since_probe INTEGER,
          up_days INTEGER, down_days INTEGER, avg_vol_ratio REAL, retreat_shrink REAL,
          trend_class TEXT, trend_class_score REAL,
+         swing_confidence REAL,
          PRIMARY KEY (target_date, code))''')
     # 迁移：为已有表添加新列
     for col, col_type in [('stock_strength', 'REAL'), ('volume_price_health', 'REAL'),
-                           ('trend_class', 'TEXT'), ('trend_class_score', 'REAL')]:
+                           ('trend_class', 'TEXT'), ('trend_class_score', 'REAL'),
+                           ('swing_confidence', 'REAL')]:
         try:
             conn.execute(f"ALTER TABLE screening_history ADD COLUMN {col} {col_type}")
             print(f"  ✓ 已新增 {col} 列")
