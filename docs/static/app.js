@@ -6,7 +6,9 @@
 let currentPage = 1, currentSort = 'total', currentOrder = 'desc';
 let currentDate = null;
 let currentClass = 'all';        // 'all' | 'trend' | 'choppy'
+let currentMode = 'score';       // 'score' | 'pattern'
 let allStocks = [];              // currently loaded date's stocks (filtered)
+let allPatternStocks = [];       // pattern mode data
 let radarChart = null, historyChart = null, klineChart = null;
 let dateStats = {};              // summary stats per date
 
@@ -25,6 +27,10 @@ function scoreClass(v) {
   if (v >= 50) return 'score-50'; return 'score-low';
 }
 function pctClass(v) { return v >= 0 ? 'score-80' : 'score-low'; }
+function matchClass(v) {
+  if (v >= 60) return 'score-80'; if (v >= 30) return 'score-65';
+  if (v >= 10) return 'score-50'; return 'score-low';
+}
 function barColor(v) {
   if (v >= 80) return COLORS.green; if (v >= 65) return COLORS.gold;
   if (v >= 50) return COLORS.slate; return COLORS.brick;
@@ -82,6 +88,17 @@ async function init() {
     });
   });
 
+  // ── Mode toggle (看评分 / 看形态) ──
+  document.querySelectorAll('.mode-btn').forEach(btn => {
+    btn.addEventListener('click', function() {
+      if (this.dataset.mode === currentMode) return;
+      currentMode = this.dataset.mode;
+      document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+      this.classList.add('active');
+      switchMode();
+    });
+  });
+
   // ── Mobile: sidebar drawer ──
   const menuBtn = document.getElementById('menuBtn');
   const sidebar = document.getElementById('sidebar');
@@ -112,6 +129,51 @@ async function init() {
   await loadData();
 }
 init();
+
+// ── Mode switch ──
+function switchMode() {
+  currentPage = 1;
+  // Show/hide class toggle (pattern mode has no trend/choppy classification)
+  const classToggle = document.getElementById('classToggle');
+  if (classToggle) classToggle.style.display = currentMode === 'score' ? '' : 'none';
+  // Update sortBy dropdown options
+  updateSortByOptions();
+  // Reset sort
+  currentSort = 'total'; currentOrder = 'desc';
+  // Clear detail panel
+  const panel = document.getElementById('detailPanel');
+  if (panel) panel.innerHTML = '<div class="detail-placeholder">点击左侧股票查看详情</div>';
+  // Dispose charts
+  if (radarChart) { radarChart.dispose(); radarChart = null; }
+  if (historyChart) { historyChart.dispose(); historyChart = null; }
+  if (klineChart) { klineChart.dispose(); klineChart = null; }
+  // Reload data
+  loadData();
+}
+
+function updateSortByOptions() {
+  const sel = document.getElementById('sortBy');
+  if (!sel) return;
+  if (currentMode === 'score') {
+    sel.innerHTML = `
+      <option value="total">综合总分</option>
+      <option value="stock_strength">股票强度</option>
+      <option value="washout_quality">洗盘质量</option>
+      <option value="probe_test">试盘信号</option>
+      <option value="ma_convergence">均线粘合</option>
+      <option value="launch_readiness">启动准备</option>
+      <option value="volume_price_health">量价健康</option>`;
+  } else {
+    sel.innerHTML = `
+      <option value="total">形态总分</option>
+      <option value="double_bottom_match">双底(匹配)</option>
+      <option value="uptrend_channel_match">上升通道(匹配)</option>
+      <option value="box_accumulation_match">箱体蓄力(匹配)</option>
+      <option value="structure_conf">置信度</option>`;
+  }
+  sel.value = 'total';
+  currentSort = 'total'; currentOrder = 'desc';
+}
 
 // ── Load available dates ──
 async function loadDates() {
@@ -179,15 +241,67 @@ async function loadData() {
   if (!currentDate) return;
   document.getElementById('tableBody').innerHTML = '<tr><td colspan="99" class="loading">加载中...</td></tr>';
 
-  try {
-    const r = await fetch(`data/${currentDate}.json`);
-    const d = await r.json();
-    allStocks = d.stocks || [];
-    updateStats(d);
-    currentPage = 1;
-    renderTable();
-  } catch(e) {
-    document.getElementById('tableBody').innerHTML = '<tr><td colspan="99" class="loading">数据加载失败</td></tr>';
+  if (currentMode === 'score') {
+    try {
+      const r = await fetch(`data/${currentDate}.json`);
+      const d = await r.json();
+      allStocks = d.stocks || [];
+      updateStats(d);
+      currentPage = 1;
+      renderTable();
+    } catch(e) {
+      document.getElementById('tableBody').innerHTML = '<tr><td colspan="99" class="loading">数据加载失败</td></tr>';
+    }
+  } else {
+    try {
+      const r = await fetch(`data/patterns/${currentDate}.json`);
+      if (!r.ok) throw new Error('Pattern data not available');
+      const d = await r.json();
+      allPatternStocks = d.stocks || [];
+      updateStats(d);
+      currentPage = 1;
+      renderTable();
+    } catch(e) {
+      document.getElementById('tableBody').innerHTML =
+        '<tr><td colspan="99" class="loading">该日期暂无形态数据，请切换日期或查看评分模式</td></tr>';
+    }
+  }
+}
+
+// ── Dynamic table head ──
+function renderTableHead() {
+  const thead = document.getElementById('tableHead');
+  if (!thead) return;
+  if (currentMode === 'score') {
+    thead.innerHTML = `<tr>
+      <th class="col-rank">#</th>
+      <th class="col-code">代码</th>
+      <th class="col-name">名称</th>
+      <th class="col-class">类别</th>
+      <th class="col-score sortable active" data-sort="total">总分</th>
+      <th class="col-dim sortable" data-sort="stock_strength">强度</th>
+      <th class="col-dim sortable" data-sort="washout_quality">洗盘</th>
+      <th class="col-dim sortable" data-sort="probe_test">试盘</th>
+      <th class="col-dim sortable" data-sort="ma_convergence">均粘</th>
+      <th class="col-dim sortable" data-sort="launch_readiness">启动</th>
+      <th class="col-dim sortable" data-sort="volume_price_health">量价</th>
+      <th class="col-probe">试盘次</th>
+      <th class="col-concept">概念</th>
+      <th class="col-price">收盘</th>
+      <th class="col-pct">涨跌%</th>
+    </tr>`;
+  } else {
+    thead.innerHTML = `<tr>
+      <th class="col-rank">#</th>
+      <th class="col-code">代码</th>
+      <th class="col-name">名称</th>
+      <th class="col-score sortable active" data-sort="total">形态总分</th>
+      <th class="col-pattern">主导形态</th>
+      <th class="col-dim sortable" data-sort="double_bottom_match">双底</th>
+      <th class="col-dim sortable" data-sort="uptrend_channel_match">上升通道</th>
+      <th class="col-dim sortable" data-sort="box_accumulation_match">箱体蓄力</th>
+      <th class="col-dim sortable" data-sort="structure_conf">置信度</th>
+    </tr>`;
   }
 }
 
@@ -195,33 +309,57 @@ async function loadData() {
 function updateStats(d) {
   document.getElementById('statDate').textContent = d.date || currentDate;
   const ds = dateStats[currentDate];
-  // Use filtered stocks for stats
-  const filtered = currentClass === 'all' ? allStocks : allStocks.filter(s => s.trend_class === currentClass);
-  document.getElementById('statTotal').textContent = filtered.length;
-  const totals = filtered.map(s => s.total);
-  const avg = totals.length > 0 ? (totals.reduce((a,b) => a+b, 0) / totals.length).toFixed(1) : '--';
-  const max = totals.length > 0 ? Math.max(...totals).toFixed(1) : '--';
-  document.getElementById('statAvg').textContent = avg;
-  document.getElementById('statMax').textContent = max;
-  document.getElementById('statLimit').textContent = filtered.filter(s => s.is_limit_up_today).length;
-  // 趋势/震荡计数
-  const trendCnt = allStocks.filter(s => s.trend_class === 'trend').length;
-  const choppyCnt = allStocks.filter(s => s.trend_class !== 'trend').length;
-  document.getElementById('trendCnt').textContent = trendCnt;
-  document.getElementById('choppyCnt').textContent = choppyCnt;
-  // 数据质量
-  const qlabel = { full: '完整', partial: '部分', sparse: '稀疏', unknown: '未知' };
-  document.getElementById('statQuality').textContent = ds ? (qlabel[ds.quality] || '?') : '?';
-  document.getElementById('statRaw').textContent = ds ? (ds.stock_count || ds.cnt || '?') : '?';
+
+  if (currentMode === 'score') {
+    const filtered = currentClass === 'all' ? allStocks : allStocks.filter(s => s.trend_class === currentClass);
+    document.getElementById('statTotal').textContent = filtered.length;
+    const totals = filtered.map(s => s.total);
+    const avg = totals.length > 0 ? (totals.reduce((a,b) => a+b, 0) / totals.length).toFixed(1) : '--';
+    const max = totals.length > 0 ? Math.max(...totals).toFixed(1) : '--';
+    document.getElementById('statAvg').textContent = avg;
+    document.getElementById('statMax').textContent = max;
+    document.getElementById('statLimit').textContent = filtered.filter(s => s.is_limit_up_today).length;
+    // 趋势/震荡计数
+    const trendCnt = allStocks.filter(s => s.trend_class === 'trend').length;
+    const choppyCnt = allStocks.filter(s => s.trend_class !== 'trend').length;
+    document.getElementById('trendCnt').textContent = trendCnt;
+    document.getElementById('choppyCnt').textContent = choppyCnt;
+    // 数据质量
+    const qlabel = { full: '完整', partial: '部分', sparse: '稀疏', unknown: '未知' };
+    document.getElementById('statQuality').textContent = ds ? (qlabel[ds.quality] || '?') : '?';
+    document.getElementById('statRaw').textContent = ds ? (ds.stock_count || ds.cnt || '?') : '?';
+  } else {
+    document.getElementById('statTotal').textContent = allPatternStocks.length;
+    const totals = allPatternStocks.map(s => s.total);
+    const avg = totals.length > 0 ? (totals.reduce((a,b) => a+b, 0) / totals.length).toFixed(1) : '--';
+    const max = totals.length > 0 ? Math.max(...totals).toFixed(1) : '--';
+    document.getElementById('statAvg').textContent = avg;
+    document.getElementById('statMax').textContent = max;
+    document.getElementById('statLimit').textContent = '--';
+    document.getElementById('trendCnt').textContent = '--';
+    document.getElementById('choppyCnt').textContent = '--';
+    document.getElementById('statQuality').textContent = '--';
+    document.getElementById('statRaw').textContent = '--';
+  }
 }
 
 // ── Filter and sort ──
 function getFiltered() {
-  let stocks = [...allStocks];
+  let stocks;
+  if (currentMode === 'score') {
+    stocks = [...allStocks];
 
-  // Class filter (趋势/震荡)
-  if (currentClass !== 'all') {
-    stocks = stocks.filter(s => s.trend_class === currentClass);
+    // Class filter (趋势/震荡)
+    if (currentClass !== 'all') {
+      stocks = stocks.filter(s => s.trend_class === currentClass);
+    }
+
+    // Exclude limit-up
+    if (document.getElementById('limitFilter').value === '1') {
+      stocks = stocks.filter(s => !s.is_limit_up_today);
+    }
+  } else {
+    stocks = [...allPatternStocks];
   }
 
   // Search
@@ -243,11 +381,6 @@ function getFiltered() {
     stocks = stocks.filter(s => s.concept === concept);
   }
 
-  // Exclude limit-up
-  if (document.getElementById('limitFilter').value === '1') {
-    stocks = stocks.filter(s => !s.is_limit_up_today);
-  }
-
   // Min score
   const minScore = parseFloat(document.getElementById('minScore').value) || 0;
   stocks = stocks.filter(s => s.total >= minScore);
@@ -265,6 +398,7 @@ function getFiltered() {
 
 // ── Render table ──
 function renderTable() {
+  renderTableHead();
   const filtered = getFiltered();
   const total = filtered.length;
   const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
@@ -279,25 +413,41 @@ function renderTable() {
     return;
   }
 
-  tbody.innerHTML = pageStocks.map((s, i) => `
-    <tr onclick="selectStock('${s.code}')" data-code="${s.code}">
-      <td class="col-rank">${start + i + 1}</td>
-      <td class="col-code">${s.code}</td>
-      <td class="col-name">${s.name}</td>
-      <td class="col-class"><span class="class-tag ${s.trend_class || 'choppy'}">${s.trend_class === 'trend' ? '趋势' : '震荡'}</span></td>
-      <td class="col-score ${scoreClass(s.total)}">${s.total.toFixed(1)}</td>
-      <td class="col-dim ${scoreClass(s.stock_strength||0)}">${(s.stock_strength||0).toFixed(0)}</td>
-      <td class="col-dim ${scoreClass(s.washout_quality)}">${s.washout_quality}</td>
-      <td class="col-dim ${scoreClass(s.probe_test)}">${s.probe_test}</td>
-      <td class="col-dim ${scoreClass(s.ma_convergence)}">${s.ma_convergence}</td>
-      <td class="col-dim ${scoreClass(s.launch_readiness)}">${s.launch_readiness}</td>
-      <td class="col-dim ${scoreClass(s.volume_price_health||0)}">${(s.volume_price_health||0).toFixed(0)}</td>
-      <td class="col-probe">${s.probe_count}</td>
-      <td class="col-concept"><span style="color:${getConceptColor(s.concept)};font-weight:600;white-space:nowrap;">${s.concept}</span></td>
-      <td class="col-price">${s.latest_close.toFixed(2)}</td>
-      <td class="col-pct ${pctClass(s.latest_pctChg)}">${s.latest_pctChg >= 0 ? '+' : ''}${s.latest_pctChg.toFixed(2)}%</td>
-    </tr>
-  `).join('');
+  if (currentMode === 'score') {
+    tbody.innerHTML = pageStocks.map((s, i) => `
+      <tr onclick="selectStock('${s.code}')" data-code="${s.code}">
+        <td class="col-rank">${start + i + 1}</td>
+        <td class="col-code">${s.code}</td>
+        <td class="col-name">${s.name}</td>
+        <td class="col-class"><span class="class-tag ${s.trend_class || 'choppy'}">${s.trend_class === 'trend' ? '趋势' : '震荡'}</span></td>
+        <td class="col-score ${scoreClass(s.total)}">${s.total.toFixed(1)}</td>
+        <td class="col-dim ${scoreClass(s.stock_strength||0)}">${(s.stock_strength||0).toFixed(0)}</td>
+        <td class="col-dim ${scoreClass(s.washout_quality)}">${s.washout_quality}</td>
+        <td class="col-dim ${scoreClass(s.probe_test)}">${s.probe_test}</td>
+        <td class="col-dim ${scoreClass(s.ma_convergence)}">${s.ma_convergence}</td>
+        <td class="col-dim ${scoreClass(s.launch_readiness)}">${s.launch_readiness}</td>
+        <td class="col-dim ${scoreClass(s.volume_price_health||0)}">${(s.volume_price_health||0).toFixed(0)}</td>
+        <td class="col-probe">${s.probe_count}</td>
+        <td class="col-concept"><span style="color:${getConceptColor(s.concept)};font-weight:600;white-space:nowrap;">${s.concept}</span></td>
+        <td class="col-price">${s.latest_close.toFixed(2)}</td>
+        <td class="col-pct ${pctClass(s.latest_pctChg)}">${s.latest_pctChg >= 0 ? '+' : ''}${s.latest_pctChg.toFixed(2)}%</td>
+      </tr>
+    `).join('');
+  } else {
+    tbody.innerHTML = pageStocks.map((s, i) => `
+      <tr onclick="selectStock('${s.code}')" data-code="${s.code}">
+        <td class="col-rank">${start + i + 1}</td>
+        <td class="col-code">${s.code}</td>
+        <td class="col-name">${s.name}</td>
+        <td class="col-score ${scoreClass(s.total)}">${s.total.toFixed(1)}</td>
+        <td class="col-pattern"><span class="pattern-tag ${s.dominant_pattern || 'unknown'}">${s.dominant_label || s.dominant_pattern || '—'}</span></td>
+        <td class="col-dim ${matchClass(s.double_bottom_match)}">${(s.double_bottom_match||0).toFixed(1)}</td>
+        <td class="col-dim ${matchClass(s.uptrend_channel_match)}">${(s.uptrend_channel_match||0).toFixed(1)}</td>
+        <td class="col-dim ${matchClass(s.box_accumulation_match)}">${(s.box_accumulation_match||0).toFixed(1)}</td>
+        <td class="col-dim">${(s.structure_conf||0).toFixed(2)}</td>
+      </tr>
+    `).join('');
+  }
 
   // Pagination
   const pg = document.getElementById('pagination');
@@ -351,7 +501,9 @@ async function selectStock(code) {
   if (row) row.classList.add('selected');
 
   // Find stock in current data
-  const stock = allStocks.find(s => s.code === code);
+  const stock = currentMode === 'score'
+    ? allStocks.find(s => s.code === code)
+    : allPatternStocks.find(s => s.code === code);
   if (!stock) return;
 
   // Fetch history
@@ -385,77 +537,119 @@ function closeDetailMobile() {
 function renderDetail(stock, hist) {
   const panel = document.getElementById('detailPanel');
   const isMobile = window.innerWidth <= 768;
-  panel.innerHTML = `
-    ${isMobile ? '<button class="detail-back-btn" id="detailBackBtn">&larr; 返回列表</button>' : ''}
-    <div class="detail-header">
-      <div>
-        <div class="name">${stock.name} <span class="class-tag ${stock.trend_class || 'choppy'}">${stock.trend_class === 'trend' ? '趋势' : '震荡'}</span></div>
-        <div class="code">${stock.code}</div>
-      </div>
-      <div class="total-score ${scoreClass(stock.total)}">${stock.total.toFixed(1)}</div>
-    </div>
-    <div class="detail-price-row">
-      <span>收盘 <strong>${stock.latest_close.toFixed(2)}</strong></span>
-      <span>涨跌 <strong class="${pctClass(stock.latest_pctChg)}">${stock.latest_pctChg >= 0 ? '+' : ''}${stock.latest_pctChg.toFixed(2)}%</strong></span>
-      <span>概念 <strong>${stock.concept}</strong></span>
-    </div>
 
-    <div class="radar-box" id="radarChart"></div>
+  if (currentMode === 'score') {
+    panel.innerHTML = `
+      ${isMobile ? '<button class="detail-back-btn" id="detailBackBtn">&larr; 返回列表</button>' : ''}
+      <div class="detail-header">
+        <div>
+          <div class="name">${stock.name} <span class="class-tag ${stock.trend_class || 'choppy'}">${stock.trend_class === 'trend' ? '趋势' : '震荡'}</span></div>
+          <div class="code">${stock.code}</div>
+        </div>
+        <div class="total-score ${scoreClass(stock.total)}">${stock.total.toFixed(1)}</div>
+      </div>
+      <div class="detail-price-row">
+        <span>收盘 <strong>${stock.latest_close.toFixed(2)}</strong></span>
+        <span>涨跌 <strong class="${pctClass(stock.latest_pctChg)}">${stock.latest_pctChg >= 0 ? '+' : ''}${stock.latest_pctChg.toFixed(2)}%</strong></span>
+        <span>概念 <strong>${stock.concept}</strong></span>
+      </div>
 
-    <div class="score-bars">
-      ${['stock_strength','washout_quality','probe_test','ma_convergence','launch_readiness','volume_price_health']
-        .map(k => {
-          const labels = { stock_strength:'股票强度', washout_quality:'洗盘质量', probe_test:'试盘信号', ma_convergence:'均线粘合',
-                          launch_readiness:'启动准备', volume_price_health:'量价健康' };
-          const v = stock[k] || 0;
-          return `
-          <div class="score-bar-row">
-            <span class="score-bar-label">${labels[k]}</span>
-            <div class="score-bar-track"><div class="score-bar-fill" style="width:${v}%;background:${barColor(v)}"></div></div>
-            <span class="score-bar-val ${scoreClass(v)}">${v.toFixed(0)}</span>
-          </div>`;
-        }).join('')}
-    </div>
+      <div class="radar-box" id="radarChart"></div>
 
-    <div class="history-box" id="historyChart"></div>
+      <div class="score-bars">
+        ${['stock_strength','washout_quality','probe_test','ma_convergence','launch_readiness','volume_price_health']
+          .map(k => {
+            const labels = { stock_strength:'股票强度', washout_quality:'洗盘质量', probe_test:'试盘信号', ma_convergence:'均线粘合',
+                            launch_readiness:'启动准备', volume_price_health:'量价健康' };
+            const v = stock[k] || 0;
+            return `
+            <div class="score-bar-row">
+              <span class="score-bar-label">${labels[k]}</span>
+              <div class="score-bar-track"><div class="score-bar-fill" style="width:${v}%;background:${barColor(v)}"></div></div>
+              <span class="score-bar-val ${scoreClass(v)}">${v.toFixed(0)}</span>
+            </div>`;
+          }).join('')}
+      </div>
 
-    <div class="kline-box" id="klineChart"></div>
+      <div class="history-box" id="historyChart"></div>
 
-    <div class="detail-stats">
-      <div class="detail-stat">
-        <div class="val">${stock.recent_limit_days}</div>
-        <div class="lbl">近5日涨停</div>
+      <div class="kline-box" id="klineChart"></div>
+
+      <div class="detail-stats">
+        <div class="detail-stat">
+          <div class="val">${stock.recent_limit_days}</div>
+          <div class="lbl">近5日涨停</div>
+        </div>
+        <div class="detail-stat">
+          <div class="val" style="color:${stock.is_limit_up_today ? COLORS.brick : COLORS.green}">${stock.is_limit_up_today ? '是' : '否'}</div>
+          <div class="lbl">今日涨停</div>
+        </div>
+        <div class="detail-stat">
+          <div class="val">${stock.probe_count}</div>
+          <div class="lbl">试盘次数</div>
+        </div>
+        <div class="detail-stat">
+          <div class="val">${stock.days_since_probe >= 99 ? '&mdash;' : stock.days_since_probe + '天前'}</div>
+          <div class="lbl">最近试盘</div>
+        </div>
+        <div class="detail-stat">
+          <div class="val">${stock.concept !== '—' ? stock.concept : '—'}</div>
+          <div class="lbl">所属概念</div>
+        </div>
+        <div class="detail-stat">
+          <div class="val">${stock.rank}</div>
+          <div class="lbl">当日排名</div>
+        </div>
       </div>
-      <div class="detail-stat">
-        <div class="val" style="color:${stock.is_limit_up_today ? COLORS.brick : COLORS.green}">${stock.is_limit_up_today ? '是' : '否'}</div>
-        <div class="lbl">今日涨停</div>
+    `;
+  } else {
+    // Pattern mode detail
+    const dom = stock.dominant_pattern || 'unknown';
+    panel.innerHTML = `
+      ${isMobile ? '<button class="detail-back-btn" id="detailBackBtn">&larr; 返回列表</button>' : ''}
+      <div class="detail-header">
+        <div>
+          <div class="name">${stock.name} <span class="pattern-tag ${dom}">${stock.dominant_label || dom}</span></div>
+          <div class="code">${stock.code}</div>
+        </div>
+        <div class="total-score ${scoreClass(stock.total)}">${stock.total.toFixed(1)}</div>
       </div>
-      <div class="detail-stat">
-        <div class="val">${stock.probe_count}</div>
-        <div class="lbl">试盘次数</div>
+      <div class="detail-price-row">
+        <span>概念 <strong>${stock.concept}</strong></span>
+        <span>置信度 <strong>${(stock.structure_conf||0).toFixed(2)}</strong></span>
       </div>
-      <div class="detail-stat">
-        <div class="val">${stock.days_since_probe >= 99 ? '&mdash;' : stock.days_since_probe + '天前'}</div>
-        <div class="lbl">最近试盘</div>
+
+      <div class="pattern-match-bars">
+        ${renderPatternMatchBar('双底形态', stock.double_bottom_match || 0, stock.double_bottom_score || 0)}
+        ${renderPatternMatchBar('上升通道', stock.uptrend_channel_match || 0, stock.uptrend_channel_score || 0)}
+        ${renderPatternMatchBar('箱体蓄力', stock.box_accumulation_match || 0, stock.box_accumulation_score || 0)}
       </div>
-      <div class="detail-stat">
-        <div class="val">${stock.concept !== '—' ? stock.concept : '—'}</div>
-        <div class="lbl">所属概念</div>
-      </div>
-      <div class="detail-stat">
-        <div class="val">${stock.rank}</div>
-        <div class="lbl">当日排名</div>
-      </div>
-    </div>
-  `;
+
+      <div class="kline-box pattern-kline-box" id="klineChart"></div>
+    `;
+  }
 
   // Mobile: back button listener
   const backBtn = document.getElementById('detailBackBtn');
   if (backBtn) backBtn.addEventListener('click', closeDetailMobile);
 
-  setTimeout(() => renderRadar(stock), 50);
-  setTimeout(() => renderHistory(hist), 80);
+  if (currentMode === 'score') {
+    setTimeout(() => renderRadar(stock), 50);
+    setTimeout(() => renderHistory(hist), 80);
+  }
   setTimeout(() => renderKline(hist), 110);
+}
+
+function renderPatternMatchBar(label, match, score) {
+  return `
+    <div class="score-bar-row">
+      <span class="score-bar-label">${label}</span>
+      <div class="score-bar-track">
+        <div class="score-bar-fill" style="width:${match}%;background:${barColor(match)}"></div>
+      </div>
+      <span class="score-bar-val ${matchClass(match)}">${match.toFixed(0)}</span>
+      <span class="pattern-score">(${score.toFixed(0)})</span>
+    </div>`;
 }
 
 // ── Radar chart ──
@@ -579,7 +773,57 @@ function renderKline(hist) {
   const kline = hist.kline;
   const dates = kline.map(r => r.date);
   const ohlc = kline.map(r => [r.open, r.close, r.low, r.high]);
+  const closes = kline.map(r => r.close);
   const volumes = kline.map(r => r.volume);
+
+  // Build series array
+  const series = [
+    {
+      type: 'candlestick', name: 'Price', data: ohlc,
+      xAxisIndex: 0, yAxisIndex: 0,
+      itemStyle: { color: COLORS.brick, color0: COLORS.green,
+        borderColor: COLORS.brick, borderColor0: COLORS.green },
+    },
+  ];
+
+  // Add MA lines in pattern mode
+  if (currentMode === 'pattern') {
+    function calcMA(data, period) {
+      const result = [];
+      for (let i = 0; i < data.length; i++) {
+        if (i < period - 1) { result.push(null); continue; }
+        let sum = 0;
+        for (let j = 0; j < period; j++) sum += data[i - j];
+        result.push(+(sum / period).toFixed(2));
+      }
+      return result;
+    }
+    series.push({
+      type: 'line', name: 'MA5', data: calcMA(closes, 5),
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { color: '#D4A574', width: 1 }, symbol: 'none',
+    });
+    series.push({
+      type: 'line', name: 'MA10', data: calcMA(closes, 10),
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { color: '#7A9E9F', width: 1 }, symbol: 'none',
+    });
+    series.push({
+      type: 'line', name: 'MA20', data: calcMA(closes, 20),
+      xAxisIndex: 0, yAxisIndex: 0,
+      lineStyle: { color: '#B08BA5', width: 1 }, symbol: 'none',
+    });
+  }
+
+  series.push({
+    type: 'bar', name: 'Volume',
+    data: volumes.map((v, i) => {
+      const isUp = ohlc[i][1] >= ohlc[i][0];
+      return { value: v,
+        itemStyle: { color: isUp ? 'rgba(139,58,58,0.35)' : 'rgba(74,107,90,0.35)' } };
+    }),
+    xAxisIndex: 1, yAxisIndex: 1,
+  });
 
   klineChart.setOption({
     grid: [
@@ -601,23 +845,7 @@ function renderKline(hist) {
       { type: 'value', gridIndex: 1, axisLabel: { show: false },
         splitLine: { show: false }, axisLine: { show: false } },
     ],
-    series: [
-      {
-        type: 'candlestick', name: 'Price', data: ohlc,
-        xAxisIndex: 0, yAxisIndex: 0,
-        itemStyle: { color: COLORS.brick, color0: COLORS.green,
-          borderColor: COLORS.brick, borderColor0: COLORS.green },
-      },
-      {
-        type: 'bar', name: 'Volume',
-        data: volumes.map((v, i) => {
-          const isUp = ohlc[i][1] >= ohlc[i][0];
-          return { value: v,
-            itemStyle: { color: isUp ? 'rgba(139,58,58,0.35)' : 'rgba(74,107,90,0.35)' } };
-        }),
-        xAxisIndex: 1, yAxisIndex: 1,
-      },
-    ],
+    series: series,
   });
 }
 

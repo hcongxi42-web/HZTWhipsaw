@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>HZTwhipsaw &middot; 量价洗盘评分</title>
+<title>HZTwhipsaw &middot; 形态评分</title>
 <script src="static/echarts.min.js"></script>
 <link rel="stylesheet" href="static/style.css">
 </head>
@@ -11,7 +11,11 @@
 
 <header>
   <button class="menu-btn" id="menuBtn" aria-label="菜单">&#9776;</button>
-  <h1>HZTwhipsaw <span class="subtitle">量价洗盘评分系统</span></h1>
+  <h1>HZTwhipsaw</h1>
+  <div class="mode-toggle" id="modeToggle">
+    <button class="mode-btn active" data-mode="score">看评分</button>
+    <button class="mode-btn" data-mode="pattern">看形态</button>
+  </div>
   <div class="class-toggle" id="classToggle">
     <button class="class-btn active" data-class="all">全部</button>
     <button class="class-btn" data-class="trend">趋势 <span class="class-cnt" id="trendCnt">--</span></button>
@@ -129,7 +133,7 @@
   <main class="table-panel">
     <div class="table-wrapper">
       <table id="stockTable">
-        <thead>
+        <thead id="tableHead">
           <tr>
             <th class="col-rank">#</th>
             <th class="col-code">代码</th>

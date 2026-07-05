@@ -407,6 +407,69 @@ header h1 .subtitle {
 ::-webkit-scrollbar-thumb { background: #D0CDC5; }
 ::-webkit-scrollbar-thumb:hover { background: #B0ACA7; }
 
+/* ── Mode Toggle (看评分 / 看形态) ── */
+.mode-toggle {
+  display: flex;
+  gap: 0;
+}
+.mode-btn {
+  padding: 4px 14px;
+  background: var(--bg);
+  border: 0.5px solid var(--border);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-family: var(--font-serif);
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+}
+.mode-btn:first-child { border-radius: 3px 0 0 3px; }
+.mode-btn:last-child  { border-radius: 0 3px 3px 0; }
+.mode-btn + .mode-btn { margin-left: -0.5px; }
+.mode-btn:hover { border-color: var(--navy); color: var(--navy); }
+.mode-btn.active {
+  background: var(--navy);
+  color: #FFF;
+  border-color: var(--navy);
+  font-weight: 600;
+}
+
+/* ── Pattern K-line (形态模式 — 更大高度) ── */
+.pattern-kline-box {
+  width: 100%;
+  height: 370px;
+  margin-top: 10px;
+}
+
+/* ── Pattern Tag ── */
+.col-pattern { width: 72px; font-size: 10px; }
+.pattern-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.pattern-tag.double_bottom     { color: var(--green); }
+.pattern-tag.uptrend_channel   { color: var(--navy); }
+.pattern-tag.box_accumulation  { color: var(--gold); }
+.pattern-tag.unknown           { color: var(--text-dim); }
+
+/* ── Pattern Match Bars ── */
+.pattern-match-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.pattern-score {
+  width: 40px;
+  text-align: right;
+  font-weight: 400;
+  font-size: 9px;
+  color: var(--text-faint);
+}
+
 /* ============================================================
    Mobile: Tablet & Phone (≤768px)
    ============================================================ */
@@ -634,6 +697,9 @@ header h1 .subtitle {
   .radar-box { height: 220px; }
   .history-box { height: 150px; }
   .kline-box { height: 180px; }
+  .pattern-kline-box { height: 280px; }
+  .mode-btn { padding: 4px 10px; font-size: 10px; }
+  .pattern-tag { font-size: 8px; padding: 1px 4px; }
   .detail-stats { grid-template-columns: 1fr 1fr 1fr; }
   .detail-stat .val { font-size: 14px; }
   .detail-stat .lbl { font-size: 9px; }
@@ -668,6 +734,8 @@ header h1 .subtitle {
   .radar-box { height: 190px; }
   .history-box { height: 130px; }
   .kline-box { height: 160px; }
+  .pattern-kline-box { height: 240px; }
+  .mode-btn { padding: 4px 8px; font-size: 9px; }
   .detail-stats { grid-template-columns: 1fr 1fr; }
 
   .score-bar-label { width: 50px; font-size: 9px; }
