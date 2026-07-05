@@ -107,6 +107,12 @@ jobs:
       - name: Generate static site
         run: python generate_static.py
 
+      - name: Run V5 pattern recognition
+        run: python test_v5.py --latest
+
+      - name: Generate pattern JSON
+        run: python generate_patterns.py
+
       # ── 数据质量检查（检查 DB 实际最新日期，非今天）──
       - name: Data quality check
         run: |

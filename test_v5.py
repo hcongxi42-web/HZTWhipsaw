@@ -272,7 +272,27 @@ def score_single_v5(df):
 # Part 4: 主流程
 # ================================================================
 def main():
-    target_date = '2026-06-24'
+    import argparse
+    parser = argparse.ArgumentParser(description='V5 形态识别评分')
+    parser.add_argument('--date', type=str, help='目标日期 (YYYY-MM-DD)')
+    parser.add_argument('--latest', action='store_true', help='使用 DB 中最新的 stock_daily 日期')
+    args = parser.parse_args()
+
+    if args.latest:
+        conn = sqlite3.connect(DB_PATH)
+        cur = conn.execute("SELECT MAX(date) FROM stock_daily")
+        row = cur.fetchone()
+        conn.close()
+        if row and row[0]:
+            target_date = row[0]
+            print(f'[latest] DB 最新日期: {target_date}')
+        else:
+            print('ERROR: 无法获取最新日期')
+            return
+    elif args.date:
+        target_date = args.date
+    else:
+        target_date = '2026-06-24'
     trading_dates = get_lookback_dates(target_date, LOOKBACK_DAYS)
     start_date = trading_dates[0]
     print(f'V5 形态识别 — {target_date}')
