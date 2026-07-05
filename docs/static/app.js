@@ -212,9 +212,10 @@ async function loadStorage() {
   try {
     const r = await fetch('data/storage.json');
     const d = await r.json();
-    renderStorageBar('storageBarRepo', 'storageValRepo', d.repo_mb, d.repo_mb, '仓库');
-    renderStorageBar('storageBarCache', 'storageValCache', d.cache_mb, d.cache_limit_mb, '缓存');
-    renderStorageBar('storageBarPages', 'storageValPages', d.pages_mb, d.pages_mb, '页面');
+    // GitHub: repo 软限制 1GB, Pages 限制 1GB, Actions cache 10GB
+    renderStorageBar('storageBarRepo', 'storageValRepo', d.repo_mb, 1024, '仓库');
+    renderStorageBar('storageBarCache', 'storageValCache', d.cache_mb, d.cache_limit_mb || 10240, '缓存');
+    renderStorageBar('storageBarPages', 'storageValPages', d.pages_mb, 1024, '页面');
     document.getElementById('storageUpdated').textContent = '更新于 ' + d.updated;
   } catch(e) {
     document.getElementById('storageUpdated').textContent = '储存数据加载失败';

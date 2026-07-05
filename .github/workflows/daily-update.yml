@@ -137,6 +137,36 @@ jobs:
           path: stock_data.db
           key: stock-db-${{ github.run_id }}
 
+      # ── 刷新存储监控（最后执行，确保包含所有生成文件）──
+      - name: Refresh storage monitor
+        run: |
+          python -c "
+          import json, os, time
+          db_size = os.path.getsize('stock_data.db') / 1048576 if os.path.exists('stock_data.db') else 0
+          seed_size = os.path.getsize('stock_data_seed.db') / 1048576 if os.path.exists('stock_data_seed.db') else 0
+          def dir_size(path):
+              total = 0
+              for r, d, fs in os.walk(path):
+                  for f in fs:
+                      try: total += os.path.getsize(os.path.join(r, f))
+                      except OSError: pass
+              return total / 1048576
+          docs_size = dir_size('docs')
+          code_size = dir_size('.') - db_size - docs_size - seed_size
+          if code_size < 0: code_size = 0.5
+          storage = {
+              'repo_mb': round(seed_size + docs_size + code_size, 1),
+              'cache_mb': round(db_size, 1),
+              'cache_limit_mb': 10240,
+              'pages_mb': round(docs_size, 1),
+              'updated': time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime()),
+          }
+          os.makedirs('docs/data', exist_ok=True)
+          with open('docs/data/storage.json', 'w') as f:
+              json.dump(storage, f)
+          print(f'[storage] repo={storage[\"repo_mb\"]}MB cache={storage[\"cache_mb\"]}MB pages={storage[\"pages_mb\"]}MB updated={storage[\"updated\"]}')
+          "
+
       # ── 提交并推送静态文件 ──
       - name: Commit and push static files
         run: |
